@@ -363,7 +363,7 @@ class MicroVelocityAnalyzer:
                 asset_amount = float(self.accounts[address][0][counter])
                 liability_amount = float(self.accounts[address][1][border])
                 if (asset_amount - liability_amount) >= 0:
-                    idx_range = np.unique(np.arange(counter - self.min_block_number, border - self.min_block_number)//self.save_every_n)
+                    idx_range = np.unique(np.arange(counter - self.min_block_number, border + 1 - self.min_block_number)//self.save_every_n)
                     if len(idx_range) == 1:
                         self.accounts[address][0][counter] -= liability_amount
                         self.accounts[address][1].pop(border)
@@ -376,7 +376,7 @@ class MicroVelocityAnalyzer:
                         self.accounts[address][1].pop(border)
                         break
                 else:
-                    idx_range = np.unique(np.arange(counter - self.min_block_number, border - self.min_block_number)//self.save_every_n)
+                    idx_range = np.unique(np.arange(counter - self.min_block_number, border + 1 - self.min_block_number)//self.save_every_n)
                     if len(idx_range) == 1:
                         self.accounts[address][1][border] -= asset_amount
                         self.accounts[address][0].pop(counter)
