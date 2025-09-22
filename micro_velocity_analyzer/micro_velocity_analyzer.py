@@ -81,7 +81,7 @@ def process_chunk_velocities(args):
                     asset_amount = float(accounts_chunk[address][0][counter])
                     liability_amount = float(accounts_chunk[address][1][border])
                     if (asset_amount - liability_amount) >= 0:
-                        idx_range = np.unique(np.arange(counter - min_block_number, border - min_block_number)//save_every_n)
+                        idx_range = np.unique(np.arange(counter - min_block_number, border -min_block_number)//save_every_n)
                         if len(idx_range) == 1:
                             accounts_chunk[address][0][counter] -= liability_amount
                             accounts_chunk[address][1].pop(border)
@@ -89,7 +89,7 @@ def process_chunk_velocities(args):
                         else:
                             duration = border - counter
                             if duration > 0:
-                                ind_velocity[idx_range[1:]] += liability_amount / duration
+                                ind_velocity[idx_range] += liability_amount / duration
                             accounts_chunk[address][0][counter] -= liability_amount
                             accounts_chunk[address][1].pop(border)
                             break
@@ -101,7 +101,7 @@ def process_chunk_velocities(args):
                         else:
                             duration = border - counter
                             if duration > 0:
-                                ind_velocity[idx_range[1:]] += asset_amount / duration
+                                ind_velocity[idx_range] += asset_amount / duration
                             accounts_chunk[address][1][border] -= asset_amount
                             accounts_chunk[address][0].pop(counter)
             results[address] = ind_velocity
@@ -363,7 +363,7 @@ class MicroVelocityAnalyzer:
                 asset_amount = float(self.accounts[address][0][counter])
                 liability_amount = float(self.accounts[address][1][border])
                 if (asset_amount - liability_amount) >= 0:
-                    idx_range = np.unique(np.arange(counter - self.min_block_number, border + 1 - self.min_block_number)//self.save_every_n)
+                    idx_range = np.unique(np.arange(counter - self.min_block_number, border - self.min_block_number)//self.save_every_n)
                     if len(idx_range) == 1:
                         self.accounts[address][0][counter] -= liability_amount
                         self.accounts[address][1].pop(border)
@@ -371,19 +371,19 @@ class MicroVelocityAnalyzer:
                     else:
                         duration = border - counter
                         if duration > 0:
-                            ind_velocity[idx_range[1:]] += liability_amount / duration
+                            ind_velocity[idx_range] += liability_amount / duration
                         self.accounts[address][0][counter] -= liability_amount
                         self.accounts[address][1].pop(border)
                         break
                 else:
-                    idx_range = np.unique(np.arange(counter - self.min_block_number, border + 1 - self.min_block_number)//self.save_every_n)
+                    idx_range = np.unique(np.arange(counter - self.min_block_number, border - self.min_block_number)//self.save_every_n)
                     if len(idx_range) == 1:
                         self.accounts[address][1][border] -= asset_amount
                         self.accounts[address][0].pop(counter)
                     else:
                         duration = border - counter
                         if duration > 0:
-                            ind_velocity[idx_range[1:]] += asset_amount / duration
+                            ind_velocity[idx_range] += asset_amount / duration
                         self.accounts[address][1][border] -= asset_amount
                         self.accounts[address][0].pop(counter)
         self.velocities[address] = ind_velocity
