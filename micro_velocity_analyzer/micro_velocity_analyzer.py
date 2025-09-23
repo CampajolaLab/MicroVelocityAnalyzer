@@ -47,7 +47,7 @@ def process_chunk_balances_v2(args):
         block_numbers = set(accounts_chunk[address][0].keys()).union(set(accounts_chunk[address][1].keys()))
         block_numbers = sorted(block_numbers)
 
-        balances = np.zeros(len(save_block_numbers), dtype=np.float64)
+        balances = np.zeros(len(save_block_numbers), dtype=np.uint256)
         for block in block_numbers:
             if block in accounts_chunk[address][0]:
                 current_balance += accounts_chunk[address][0][block]
