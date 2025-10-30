@@ -82,7 +82,7 @@ def process_chunk_velocities(args):
     calculating velocity as: amount / duration (where duration is blocks between receipt and send).
     
     The LIFO approach assumes that the most recently received tokens are spent first,
-    which is common in blockchain analysis as it often reflects actual spending patterns.
+    which makes economic sense by effectively separating savings from spending.
     
     Args:
         args: Tuple containing (addresses, accounts_chunk, min_block_number, 
@@ -98,68 +98,67 @@ def process_chunk_velocities(args):
         # Only calculate velocity if address has both incoming and outgoing transactions
         if len(accounts_chunk[address][0]) > 0 and len(accounts_chunk[address][1]) > 0:
             # Get sorted lists of asset (incoming) and liability (outgoing) block numbers
-            arranged_keys = [list(accounts_chunk[address][0].keys()), list(accounts_chunk[address][1].keys())]
-            arranged_keys[0].sort()
-            arranged_keys[1].sort()
-            
+            block_numbers_by_type = [list(accounts_chunk[address][0].keys()), list(accounts_chunk[address][1].keys())]
+            block_numbers_by_type[0].sort()
+            block_numbers_by_type[1].sort()
+
             # Initialize velocity array for all time intervals
             ind_velocity = np.zeros(LIMIT, dtype=np.float64)
 
             # Process each outgoing transaction (liability)
-            for border in arranged_keys[1]:
+            for outgoing_block in block_numbers_by_type[1]:
                 # Refresh list of available incoming transactions (assets)
-                arranged_keys[0] = list(accounts_chunk[address][0].keys())
-                test = np.array(arranged_keys[0], dtype=int)
+                block_numbers_by_type[0] = list(accounts_chunk[address][0].keys())
+                incoming_blocks = np.array(block_numbers_by_type[0], dtype=int)
 
                 # Find all incoming transactions that occurred before this outgoing transaction
                 # Iterate through them in LIFO order (most recent first)
-                for i in range(0, len(test[test < border])):
+                for i in range(0, len(incoming_blocks[incoming_blocks < outgoing_block])):
                     # LIFO: Select from end of array (most recent incoming transaction)
-                    counter = test[test < border][(len(test[test < border]) - 1) - i]
-                    
-                    asset_amount = float(accounts_chunk[address][0][counter])
-                    liability_amount = float(accounts_chunk[address][1][border])
-                    
+                    incoming_block = incoming_blocks[incoming_blocks < outgoing_block][(len(incoming_blocks[incoming_blocks < outgoing_block]) - 1) - i]
+
+                    incoming_amount = float(accounts_chunk[address][0][incoming_block])
+                    outgoing_amount = float(accounts_chunk[address][1][outgoing_block])
+
                     # Case 1: Incoming amount covers (or exceeds) the outgoing amount
-                    if (asset_amount - liability_amount) >= 0:
+                    if (incoming_amount - outgoing_amount) >= 0:
                         # Calculate which time intervals this token movement spans
-                        idx_range = np.unique(np.arange(counter - min_block_number, border - min_block_number)//save_every_n)
-                        
+                        idx_range = np.unique(np.arange(incoming_block - min_block_number, outgoing_block - min_block_number)//save_every_n)
+
                         if len(idx_range) == 1:
                             # Same interval - just reduce the asset
-                            accounts_chunk[address][0][counter] -= liability_amount
-                            accounts_chunk[address][1].pop(border)
+                            accounts_chunk[address][0][incoming_block] -= outgoing_amount
+                            accounts_chunk[address][1].pop(outgoing_block)
                             break
                         else:
                             # Calculate velocity: amount / time duration
-                            duration = border - counter
+                            duration = outgoing_block - incoming_block
                             if duration > 0:
-                                ind_velocity[idx_range] += liability_amount / duration
-                            
+                                ind_velocity[idx_range] += outgoing_amount / duration
+
                             # Update remaining amounts
-                            accounts_chunk[address][0][counter] -= liability_amount
-                            accounts_chunk[address][1].pop(border)
+                            accounts_chunk[address][0][incoming_block] -= outgoing_amount
+                            accounts_chunk[address][1].pop(outgoing_block)
                             break
-                    
+
                     # Case 2: Incoming amount is less than outgoing - partial match
                     else:
                         # Calculate which time intervals this token movement spans
-                        idx_range = np.unique(np.arange(counter - min_block_number, border - min_block_number)//save_every_n)
-                        
+                        idx_range = np.unique(np.arange(incoming_block - min_block_number, outgoing_block - min_block_number)//save_every_n)
+
                         if len(idx_range) == 1:
                             # Same interval - reduce liability and consume entire asset
-                            accounts_chunk[address][1][border] -= asset_amount
-                            accounts_chunk[address][0].pop(counter)
+                            accounts_chunk[address][1][outgoing_block] -= incoming_amount
+                            accounts_chunk[address][0].pop(incoming_block)
                         else:
                             # Calculate velocity for the partial amount
-                            duration = border - counter
+                            duration = outgoing_block - incoming_block
                             if duration > 0:
-                                ind_velocity[idx_range] += asset_amount / duration
-                            
+                                ind_velocity[idx_range] += incoming_amount / duration
+
                             # Update remaining amounts and continue to next incoming transaction
-                            accounts_chunk[address][1][border] -= asset_amount
-                            accounts_chunk[address][0].pop(counter)
-            
+                            accounts_chunk[address][1][outgoing_block] -= incoming_amount
+                            accounts_chunk[address][0].pop(incoming_block)
             results[address] = ind_velocity
     
     return results
