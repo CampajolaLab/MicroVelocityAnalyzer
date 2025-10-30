@@ -42,14 +42,18 @@ def process_chunk_balances_v2(args):
     results = {}
 
     for address in tqdm(addresses, position=pos, leave=False):
-        current_balance = 0.0
+        # Use Python's arbitrary-precision integer for exact arithmetic
+        current_balance = 0
         
         # Get all unique block numbers where this address had transactions (assets or liabilities)
         block_numbers = set(accounts_chunk[address][0].keys()).union(set(accounts_chunk[address][1].keys()))
         block_numbers = sorted(block_numbers)
 
         # Initialize balance array for all checkpoints
-        balances = np.zeros(len(save_block_numbers), dtype=np.uint256)
+        # Using object dtype to store Python's arbitrary-precision integers
+        # This ensures exact integer arithmetic (no floating-point precision loss)
+        balances = np.empty(len(save_block_numbers), dtype=object)
+        balances.fill(0)  # Fill with integer 0, not float
         
         # Process each block where transactions occurred
         for block in block_numbers:
@@ -246,7 +250,8 @@ class MicroVelocityAnalyzer:
         """
         to_address = line['to_address'].lower()
         try:
-            amount = float(line['amount'])
+            # Parse amount as integer to maintain exact precision for large values
+            amount = int(line['amount'])
             block_number = int(line['block_number'])
         except ValueError:
             print(f"Invalid data in allocated_file: {line}")
@@ -291,7 +296,8 @@ class MicroVelocityAnalyzer:
         from_address = line['from_address'].lower()
         to_address = line['to_address'].lower()
         try:
-            amount = float(line['amount'])
+            # Parse amount as integer to maintain exact precision for large values
+            amount = int(line['amount'])
             block_number = int(line['block_number'])
         except ValueError:
             print(f"Invalid data in transfers_file: {line}")
