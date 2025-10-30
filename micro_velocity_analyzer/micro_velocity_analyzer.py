@@ -66,7 +66,11 @@ def process_chunk_balances_v2(args):
                 current_balance -= accounts_chunk[address][1][block]
             
             # Calculate which checkpoint index this block corresponds to
-            idx = (block - min_block_number) // save_every_n + 1
+            if save_every_n > 1:
+                idx = (block - min_block_number) // save_every_n + 1
+            else:
+                idx = block - min_block_number
+
             if idx < len(balances):
                 balances[idx] = current_balance
 
