@@ -471,7 +471,6 @@ class MicroVelocityAnalyzer:
         Save final results to pickle file.
         
         Saves a tuple containing:
-        - backup_accounts: Original account data before velocity calculation
         - velocities: Calculated velocity arrays per address
         - balances: Calculated balance arrays per address
         
@@ -482,7 +481,7 @@ class MicroVelocityAnalyzer:
             return
         else:
             with open(self.output_file, 'wb') as file:
-                pickle.dump([self.backup_accounts, self.velocities, self.balances], file)
+                pickle.dump([self.velocities, self.balances], file)
 
     def run_analysis(self):
         """
