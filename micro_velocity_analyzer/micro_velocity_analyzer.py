@@ -97,25 +97,25 @@ def process_chunk_velocities(args):
     for address in tqdm(addresses, position=pos, leave=False):
         # Only calculate velocity if address has both incoming and outgoing transactions
         if len(accounts_chunk[address][0]) > 0 and len(accounts_chunk[address][1]) > 0:
-            # Get sorted lists of asset (incoming) and liability (outgoing) block numbers
-            block_numbers_by_type = [list(accounts_chunk[address][0].keys()), list(accounts_chunk[address][1].keys())]
-            block_numbers_by_type[0].sort()
-            block_numbers_by_type[1].sort()
+            # Get sorted lists of liability (outgoing) block numbers
+            sorted_out_blocks = sorted(list(accounts_chunk[address][1].keys()))
 
             # Initialize velocity array for all time intervals
             ind_velocity = np.zeros(LIMIT, dtype=np.float64)
 
             # Process each outgoing transaction (liability)
-            for outgoing_block in block_numbers_by_type[1]:
+            for outgoing_block in sorted_out_blocks:
                 # Refresh list of available incoming transactions (assets)
-                block_numbers_by_type[0] = list(accounts_chunk[address][0].keys())
-                incoming_blocks = np.array(block_numbers_by_type[0], dtype=int)
+                sorted_in_blocks = sorted(list(accounts_chunk[address][0].keys()))
+                incoming_blocks = np.array(sorted_in_blocks, dtype=int)
 
                 # Find all incoming transactions that occurred before this outgoing transaction
+                eligible_incoming_blocks = incoming_blocks[incoming_blocks < outgoing_block]
+                
                 # Iterate through them in LIFO order (most recent first)
-                for i in range(0, len(incoming_blocks[incoming_blocks < outgoing_block])):
+                for i in range(len(eligible_incoming_blocks) - 1, -1, -1):
                     # LIFO: Select from end of array (most recent incoming transaction)
-                    incoming_block = incoming_blocks[incoming_blocks < outgoing_block][(len(incoming_blocks[incoming_blocks < outgoing_block]) - 1) - i]
+                    incoming_block = eligible_incoming_blocks[i]
 
                     incoming_amount = float(accounts_chunk[address][0][incoming_block])
                     outgoing_amount = float(accounts_chunk[address][1][outgoing_block])
@@ -126,7 +126,7 @@ def process_chunk_velocities(args):
                         idx_range = np.unique(np.arange(incoming_block - min_block_number, outgoing_block - min_block_number)//save_every_n)
 
                         if len(idx_range) == 1:
-                            # Same interval - just reduce the asset
+                            # Through transaction - just reduce the net incoming amount
                             accounts_chunk[address][0][incoming_block] -= outgoing_amount
                             accounts_chunk[address][1].pop(outgoing_block)
                             break
@@ -147,7 +147,7 @@ def process_chunk_velocities(args):
                         idx_range = np.unique(np.arange(incoming_block - min_block_number, outgoing_block - min_block_number)//save_every_n)
 
                         if len(idx_range) == 1:
-                            # Same interval - reduce liability and consume entire asset
+                            # Through transaction - reduce liability and consume entire asset
                             accounts_chunk[address][1][outgoing_block] -= incoming_amount
                             accounts_chunk[address][0].pop(incoming_block)
                         else:
