@@ -1,3 +1,14 @@
+"""
+MicroVelocityAnalyzer - Blockchain Token Velocity Analysis Tool
+
+This module analyzes blockchain token transactions to calculate:
+1. Account balances over time
+2. Token velocity (rate of token movement) using LIFO (Last-In-First-Out) accounting
+
+The analyzer processes token allocations and transfers to understand how quickly
+tokens move through the economy, which is a key metric for token economics analysis.
+"""
+
 import argparse
 import os
 import pickle
@@ -6,53 +17,51 @@ import csv
 from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
-def process_chunk_balances(args):
-    addresses, accounts_chunk, min_block_number, max_block_number, save_every_n, LIMIT, pos = args
-    results = {}
-    save_block_numbers = [min_block_number + i * save_every_n for i in range(LIMIT)]
-    for address in tqdm(addresses, position=pos, leave=False):
-        # Collect all balance changes
-        balance_changes = []
-        for block_number, amount in accounts_chunk[address][0].items():
-            balance_changes.append((int(block_number), float(amount)))
-        for block_number, amount in accounts_chunk[address][1].items():
-            balance_changes.append((int(block_number), -float(amount)))
-        # Sort the balance changes by block number
-        balance_changes.sort()
-        # Initialize balance and index for balance changes
-        balance = 0.0
-        change_idx = 0
-        balances = []
-        # Iterate over save_block_numbers
-        for block_number in save_block_numbers:
-            # Apply all balance changes up to the current block_number
-            while change_idx < len(balance_changes) and balance_changes[change_idx][0] <= block_number:
-                balance += balance_changes[change_idx][1]
-                change_idx += 1
-            balances.append(balance)
-        results[address] = np.array(balances, dtype=np.float64)
-    
-    del balance_changes, balances
-    return results
+
 
 def process_chunk_balances_v2(args):
+    """
+    Calculate account balances for a chunk of addresses (parallel worker function).
+    
+    This function processes a subset of addresses to compute their balance at regular
+    block intervals. It iterates through all blocks where balance changes occur and
+    updates the running balance accordingly.
+    
+    Args:
+        args: Tuple containing (addresses, accounts_chunk, min_block_number, 
+              max_block_number, save_every_n, LIMIT, pos)
+    
+    Returns:
+        dict: Maps address -> numpy array of balances at each checkpoint
+    """
     addresses, accounts_chunk, min_block_number, max_block_number, save_every_n, LIMIT, pos = args
     
+    # Calculate checkpoint block numbers where balances will be saved
     save_block_numbers = [min_block_number + i * save_every_n for i in range(LIMIT)]
 
     results = {}
 
     for address in tqdm(addresses, position=pos, leave=False):
         current_balance = 0.0
+        
+        # Get all unique block numbers where this address had transactions (assets or liabilities)
         block_numbers = set(accounts_chunk[address][0].keys()).union(set(accounts_chunk[address][1].keys()))
         block_numbers = sorted(block_numbers)
 
+        # Initialize balance array for all checkpoints
         balances = np.zeros(len(save_block_numbers), dtype=np.uint256)
+        
+        # Process each block where transactions occurred
         for block in block_numbers:
+            # Add incoming tokens (assets)
             if block in accounts_chunk[address][0]:
                 current_balance += accounts_chunk[address][0][block]
+            
+            # Subtract outgoing tokens (liabilities)
             if block in accounts_chunk[address][1]:
                 current_balance -= accounts_chunk[address][1][block]
+            
+            # Calculate which checkpoint index this block corresponds to
             idx = (block - min_block_number) // save_every_n + 1
             if idx < len(balances):
                 balances[idx] = current_balance
@@ -62,54 +71,127 @@ def process_chunk_balances_v2(args):
     
     return results
 
+
+
 def process_chunk_velocities(args):
+    """
+    Calculate token velocities for a chunk of addresses using LIFO matching (parallel worker function).
+    
+    Token velocity measures how fast tokens move through addresses. This function uses
+    LIFO (Last-In-First-Out) accounting to match outgoing transactions with incoming ones,
+    calculating velocity as: amount / duration (where duration is blocks between receipt and send).
+    
+    The LIFO approach assumes that the most recently received tokens are spent first,
+    which is common in blockchain analysis as it often reflects actual spending patterns.
+    
+    Args:
+        args: Tuple containing (addresses, accounts_chunk, min_block_number, 
+              save_every_n, LIMIT, pos)
+    
+    Returns:
+        dict: Maps address -> numpy array of velocities at each checkpoint
+    """
     addresses, accounts_chunk, min_block_number, save_every_n, LIMIT, pos = args
     results = {}
+    
     for address in tqdm(addresses, position=pos, leave=False):
+        # Only calculate velocity if address has both incoming and outgoing transactions
         if len(accounts_chunk[address][0]) > 0 and len(accounts_chunk[address][1]) > 0:
+            # Get sorted lists of asset (incoming) and liability (outgoing) block numbers
             arranged_keys = [list(accounts_chunk[address][0].keys()), list(accounts_chunk[address][1].keys())]
             arranged_keys[0].sort()
             arranged_keys[1].sort()
+            
+            # Initialize velocity array for all time intervals
             ind_velocity = np.zeros(LIMIT, dtype=np.float64)
 
+            # Process each outgoing transaction (liability)
             for border in arranged_keys[1]:
+                # Refresh list of available incoming transactions (assets)
                 arranged_keys[0] = list(accounts_chunk[address][0].keys())
                 test = np.array(arranged_keys[0], dtype=int)
 
+                # Find all incoming transactions that occurred before this outgoing transaction
+                # Iterate through them in LIFO order (most recent first)
                 for i in range(0, len(test[test < border])):
+                    # LIFO: Select from end of array (most recent incoming transaction)
                     counter = test[test < border][(len(test[test < border]) - 1) - i]
+                    
                     asset_amount = float(accounts_chunk[address][0][counter])
                     liability_amount = float(accounts_chunk[address][1][border])
+                    
+                    # Case 1: Incoming amount covers (or exceeds) the outgoing amount
                     if (asset_amount - liability_amount) >= 0:
-                        idx_range = np.unique(np.arange(counter - min_block_number, border -min_block_number)//save_every_n)
+                        # Calculate which time intervals this token movement spans
+                        idx_range = np.unique(np.arange(counter - min_block_number, border - min_block_number)//save_every_n)
+                        
                         if len(idx_range) == 1:
+                            # Same interval - just reduce the asset
                             accounts_chunk[address][0][counter] -= liability_amount
                             accounts_chunk[address][1].pop(border)
                             break
                         else:
+                            # Calculate velocity: amount / time duration
                             duration = border - counter
                             if duration > 0:
                                 ind_velocity[idx_range] += liability_amount / duration
+                            
+                            # Update remaining amounts
                             accounts_chunk[address][0][counter] -= liability_amount
                             accounts_chunk[address][1].pop(border)
                             break
+                    
+                    # Case 2: Incoming amount is less than outgoing - partial match
                     else:
+                        # Calculate which time intervals this token movement spans
                         idx_range = np.unique(np.arange(counter - min_block_number, border - min_block_number)//save_every_n)
+                        
                         if len(idx_range) == 1:
+                            # Same interval - reduce liability and consume entire asset
                             accounts_chunk[address][1][border] -= asset_amount
                             accounts_chunk[address][0].pop(counter)
                         else:
+                            # Calculate velocity for the partial amount
                             duration = border - counter
                             if duration > 0:
                                 ind_velocity[idx_range] += asset_amount / duration
+                            
+                            # Update remaining amounts and continue to next incoming transaction
                             accounts_chunk[address][1][border] -= asset_amount
                             accounts_chunk[address][0].pop(counter)
+            
             results[address] = ind_velocity
+    
     return results
 
+
+
 class MicroVelocityAnalyzer:
-    def __init__(self, allocated_file, transfers_file, output_file='temp/general_velocities.pickle', save_every_n=1, n_cores=1, n_chunks=1, 
-                 split_save=False, batch_size=1):
+    """
+    Analyzes blockchain token transactions to calculate balances and velocities.
+    
+    This class processes token allocation and transfer data to compute:
+    1. Account balances over time at regular block intervals
+    2. Token velocity using LIFO (Last-In-First-Out) accounting
+    
+    Data Structure:
+        accounts[address] = [assets_dict, liabilities_dict]
+        - assets_dict: {block_number: amount} for tokens received
+        - liabilities_dict: {block_number: amount} for tokens sent
+    
+    Attributes:
+        allocated_file (str): Path to CSV file with initial token allocations
+        transfers_file (str): Path to CSV file with token transfers
+        output_file (str): Path where results will be saved (pickle format)
+        save_every_n (int): Block interval for saving checkpoints (e.g., 1 = every block)
+        n_cores (int): Number of CPU cores for parallel processing
+        n_chunks (int): Number of chunks to split addresses into
+        split_save (bool): If True, save intermediate results to separate files
+        batch_size (int): Number of chunks to process per batch
+    """
+    
+    def __init__(self, allocated_file, transfers_file, output_file='temp/general_velocities.pickle', 
+                 save_every_n=1, n_cores=1, n_chunks=1, split_save=False, batch_size=1):
         self.allocated_file = allocated_file
         self.transfers_file = transfers_file
         self.output_file = output_file
@@ -118,63 +200,105 @@ class MicroVelocityAnalyzer:
         self.n_chunks = n_chunks
         self.split_save = split_save
         self.batch_size = batch_size
-        self.accounts = {}
-        self.backup_accounts = {}
+        
+        # Main data structures
+        self.accounts = {}  # {address: [{block: amount}, {block: amount}]} for assets/liabilities
+        self.backup_accounts = {}  # Copy of accounts before velocity calculation modifies it
+        
+        # Block range tracking
         self.min_block_number = float('inf')
         self.max_block_number = float('-inf')
-        self.velocities = {}
-        self.balances = {}
-        self.LIMIT = 0
+        
+        # Results
+        self.velocities = {}  # {address: numpy array of velocities}
+        self.balances = {}  # {address: numpy array of balances}
+        self.LIMIT = 0  # Number of time intervals (checkpoints)
+        
         self._create_output_folder()
 
     def _create_output_folder(self):
+        """Create output directory if it doesn't exist."""
         output_folder = os.path.dirname(self.output_file)
         if output_folder and not os.path.exists(output_folder):
             os.makedirs(output_folder)
+
     
     def load_allocated_data(self):
+        """
+        Load initial token allocation data from CSV file.
+        
+        Processes the allocated_file CSV which contains initial token distributions
+        (e.g., minting events, ICO allocations). Updates the accounts dictionary
+        and tracks the block number range.
+        
+        Expected CSV columns: to_address, amount, block_number
+        """
         with open(self.allocated_file, 'r') as file:
             reader = csv.DictReader(file)
             for line in tqdm(reader):
                 self._process_allocation(line)
 
     def _process_allocation(self, line):
+        """
+        Process a single allocation record from CSV.
+        
+        Args:
+            line (dict): CSV row with keys: to_address, amount, block_number
+        """
         to_address = line['to_address'].lower()
         try:
-            amount = float(line['amount'])  # Use float
+            amount = float(line['amount'])
             block_number = int(line['block_number'])
         except ValueError:
             print(f"Invalid data in allocated_file: {line}")
-            return  # Skip this line
+            return  # Skip invalid records
 
+        # Initialize account structure if new address
         if to_address not in self.accounts:
-            self.accounts[to_address] = [{}, {}]
+            self.accounts[to_address] = [{}, {}]  # [assets, liabilities]
         
+        # Add to assets (index 0) for this address at this block
         if block_number not in self.accounts[to_address][0]:
             self.accounts[to_address][0][block_number] = amount
         else:
             self.accounts[to_address][0][block_number] += amount
 
+        # Update block range
         self.min_block_number = min(self.min_block_number, block_number)
         self.max_block_number = max(self.max_block_number, block_number)
 
     def load_transfer_data(self):
+        """
+        Load token transfer data from CSV file.
+        
+        Processes the transfers_file CSV which contains peer-to-peer token transfers.
+        Each transfer creates an asset for the recipient and a liability for the sender.
+        Updates the accounts dictionary and tracks the block number range.
+        
+        Expected CSV columns: from_address, to_address, amount, block_number
+        """
         with open(self.transfers_file, 'r') as file:
             reader = csv.DictReader(file)
             for line in tqdm(reader):
                 self._process_transfer(line)
 
     def _process_transfer(self, line):
+        """
+        Process a single transfer record from CSV.
+        
+        Args:
+            line (dict): CSV row with keys: from_address, to_address, amount, block_number
+        """
         from_address = line['from_address'].lower()
         to_address = line['to_address'].lower()
         try:
-            amount = float(line['amount'])  # Use float
+            amount = float(line['amount'])
             block_number = int(line['block_number'])
         except ValueError:
             print(f"Invalid data in transfers_file: {line}")
-            return  # Skip this line
+            return  # Skip invalid records
 
-        # Assets
+        # Record asset for recipient (to_address)
         if to_address not in self.accounts:
             self.accounts[to_address] = [{}, {}]
         if block_number not in self.accounts[to_address][0]:
@@ -182,7 +306,7 @@ class MicroVelocityAnalyzer:
         else:
             self.accounts[to_address][0][block_number] += amount
 
-        # Liabilities
+        # Record liability for sender (from_address)
         if from_address not in self.accounts:
             self.accounts[from_address] = [{}, {}]
         if block_number not in self.accounts[from_address][1]:
@@ -190,86 +314,64 @@ class MicroVelocityAnalyzer:
         else:
             self.accounts[from_address][1][block_number] += amount
 
+        # Update block range
         self.min_block_number = min(self.min_block_number, block_number)
         self.max_block_number = max(self.max_block_number, block_number)
 
-    def calculate_balances(self):
-        save_block_numbers = [self.min_block_number + i * self.save_every_n for i in range(self.LIMIT)]
-        for address in tqdm(self.accounts.keys()):
-            # Collect all balance changes
-            balance_changes = []
-            for block_number, amount in self.accounts[address][0].items():
-                balance_changes.append((int(block_number), float(amount)))
-            for block_number, amount in self.accounts[address][1].items():
-                balance_changes.append((int(block_number), -float(amount)))
-            # Sort the balance changes by block number
-            balance_changes.sort()
-            # Initialize balance and index for balance changes
-            balance = 0.0
-            change_idx = 0
-            balances = []
-            # Iterate over save_block_numbers
-            for block_number in save_block_numbers:
-                # Apply all balance changes up to the current block_number
-                while change_idx < len(balance_changes) and balance_changes[change_idx][0] <= block_number:
-                    balance += balance_changes[change_idx][1]
-                    change_idx += 1
-                balances.append(balance)
-            self.balances[address] = np.array(balances, dtype=np.float64)
-        
-    # def calculate_balances_parallel(self):
-    #     addresses = list(self.accounts.keys())
-    #     np.random.shuffle(addresses) # Shuffle to avoid having a few addresses with many transactions in the same chunk
-    #     chunk_size = max(1, len(addresses) // self.n_chunks)
-    #     chunks = [addresses[i:(i + chunk_size)] for i in range(0, len(addresses), chunk_size)]
 
-    #     # Process in batches of n_cores
-    #     total_chunks = len(chunks)
-    #     processed_chunks = 0
-        
-    #     with ProcessPoolExecutor(max_workers=self.n_cores) as executor:
-    #         with tqdm(total=total_chunks, desc="Processing chunks") as pbar:
-    #             while processed_chunks < total_chunks:
-    #                 # Submit batch of n_cores chunks
-    #                 current_batch = chunks[processed_chunks:processed_chunks + self.n_cores]
-    #                 futures = []
-                    
-    #                 for i, chunk in enumerate(current_batch):
-    #                     accounts_chunk = {address: self.accounts[address] for address in chunk}
-    #                     args = (chunk, accounts_chunk, self.min_block_number, 
-    #                         self.max_block_number, self.save_every_n, 
-    #                         self.LIMIT, i + 1)
-    #                     futures.append(executor.submit(process_chunk_balances_v2, args))
-                    
-    #                 # Process results as they complete
-    #                 for future in as_completed(futures):
-    #                     chunk_results = future.result()
-    #                     self.balances.update(chunk_results)
-    #                     del chunk_results
-    #                     processed_chunks += 1
-    #                     pbar.update(1)
-                    
-    #                 # Clean up
-    #                 del futures
 
     def _get_split_filename(self, base_type, last_address):
-        """Generate filename for split saves"""
+        """
+        Generate filename for split save functionality.
+        
+        Args:
+            base_type (str): Type of data ('balances' or 'velocities')
+            last_address (str): Last address in the chunk being saved
+            
+        Returns:
+            str: Full path for the split file
+        """
         dirname = os.path.dirname(self.output_file)
         basename = os.path.splitext(os.path.basename(self.output_file))[0]
         return os.path.join(dirname, f"{basename}_{base_type}_{last_address}.pickle")
 
     def _save_split_results(self, results, result_type, last_address):
-        """Save intermediate results to split file"""
+        """
+        Save intermediate results to a split file.
+        
+        Used when processing large datasets to avoid memory issues by saving
+        results incrementally rather than holding everything in memory.
+        
+        Args:
+            results (dict): Results to save
+            result_type (str): Type of data ('balances' or 'velocities')
+            last_address (str): Last address in this batch
+        """
         filename = self._get_split_filename(result_type, last_address)
         print(f'Saving {result_type} to {filename}')
         with open(filename, 'wb') as f:
             pickle.dump(results, f)
 
     def calculate_balances_parallel(self):
+        """
+        Calculate account balances using parallel processing.
+        
+        Distributes addresses across multiple worker processes to calculate balances
+        at regular block intervals. Can optionally save results incrementally if
+        split_save is enabled.
+        
+        The parallel execution model:
+        1. Split addresses into n_chunks
+        2. Process chunks in batches of (n_cores * batch_size)
+        3. Optionally save intermediate results to avoid memory overflow
+        """
         addresses = list(self.accounts.keys())
+        
+        # Shuffle addresses unless using split_save (which needs deterministic order)
         if not self.split_save:
             np.random.shuffle(addresses)
             
+        # Divide addresses into chunks for parallel processing
         chunk_size = max(1, len(addresses) // self.n_chunks)
         chunks = [addresses[i:(i + chunk_size)] for i in range(0, len(addresses), chunk_size)]
         
@@ -280,9 +382,11 @@ class MicroVelocityAnalyzer:
         with ProcessPoolExecutor(max_workers=self.n_cores) as executor:
             with tqdm(total=total_chunks, desc="Processing chunks") as pbar:
                 while processed_chunks < total_chunks:
+                    # Process batches to control memory usage
                     current_batch = chunks[processed_chunks:processed_chunks + self.n_cores*self.batch_size]
                     futures = []
                     
+                    # Submit worker jobs for this batch
                     for i, chunk in enumerate(current_batch):
                         accounts_chunk = {address: self.accounts[address] for address in chunk}
                         args = (chunk, accounts_chunk, self.min_block_number, 
@@ -290,26 +394,42 @@ class MicroVelocityAnalyzer:
                                self.LIMIT, i + 1)
                         futures.append(executor.submit(process_chunk_balances_v2, args))
                     
+                    # Collect results as they complete
                     for future in as_completed(futures):
                         chunk_results = future.result()
                         batch_results.update(chunk_results)
                         processed_chunks += 1
                         pbar.update(1)
                     
+                    # Handle results based on split_save setting
                     if self.split_save:
                         last_address = current_batch[-1][-1]
                         self._save_split_results(batch_results, 'balances', last_address)
-                        batch_results = {}
+                        batch_results = {}  # Clear to free memory
                     else:
                         self.balances.update(batch_results)
                     
                     del futures
 
     def calculate_velocities_parallel(self):
+        """
+        Calculate token velocities using parallel processing with LIFO matching.
+        
+        Distributes addresses across multiple worker processes to calculate velocities
+        using LIFO (Last-In-First-Out) accounting. Can optionally save results 
+        incrementally if split_save is enabled.
+        
+        Note: This operation modifies the accounts dictionary as it matches and
+        consumes assets/liabilities. The original accounts are preserved in
+        backup_accounts for reference.
+        """
         addresses = list(self.accounts.keys())
+        
+        # Shuffle addresses unless using split_save (which needs deterministic order)
         if not self.split_save:
             np.random.shuffle(addresses)
             
+        # Divide addresses into chunks for parallel processing
         chunk_size = max(1, len(addresses) // self.n_chunks)
         chunks = [addresses[i:(i + chunk_size)] for i in range(0, len(addresses), chunk_size)]
         
@@ -319,134 +439,117 @@ class MicroVelocityAnalyzer:
         with ProcessPoolExecutor(max_workers=self.n_cores) as executor:
             with tqdm(total=len(chunks), desc="Processing chunks") as pbar:
                 while processed_chunks < len(chunks):
+                    # Process batches to control memory usage
                     current_batch = chunks[processed_chunks:processed_chunks + self.n_cores*self.batch_size]
                     futures = []
                     
+                    # Submit worker jobs for this batch
                     for i, chunk in enumerate(current_batch):
                         accounts_chunk = {address: self.accounts[address] for address in chunk}
                         args = (chunk, accounts_chunk, self.min_block_number, 
                                self.save_every_n, self.LIMIT, i + 1)
                         futures.append(executor.submit(process_chunk_velocities, args))
                     
+                    # Collect results as they complete
                     for future in as_completed(futures):
                         chunk_results = future.result()
                         batch_results.update(chunk_results)
                         processed_chunks += 1
                         pbar.update(1)
                     
+                    # Handle results based on split_save setting
                     if self.split_save:
                         last_address = current_batch[-1][-1]
                         self._save_split_results(batch_results, 'velocities', last_address)
-                        batch_results = {}
+                        batch_results = {}  # Clear to free memory
                     else:
                         self.velocities.update(batch_results)
                     
                     del futures
 
-    def calculate_velocities(self):
-        for address in tqdm(self.accounts.keys()):
-            if len(self.accounts[address][0]) > 0 and len(self.accounts[address][1]) > 0:
-                self._calculate_individual_velocity(address)
-
-    def _calculate_individual_velocity(self, address):
-        arranged_keys = [list(self.accounts[address][0].keys()), list(self.accounts[address][1].keys())]
-        arranged_keys[0].sort()
-        arranged_keys[1].sort()
-        ind_velocity = np.zeros(self.LIMIT, dtype=np.float64)
-
-        for border in tqdm(arranged_keys[1], leave=False):
-            arranged_keys[0] = list(self.accounts[address][0].keys())
-            test = np.array(arranged_keys[0], dtype=int)
-
-            for i in range(0, len(test[test < border])):
-                counter = test[test < border][(len(test[test < border]) - 1) - i]
-                asset_amount = float(self.accounts[address][0][counter])
-                liability_amount = float(self.accounts[address][1][border])
-                if (asset_amount - liability_amount) >= 0:
-                    idx_range = np.unique(np.arange(counter - self.min_block_number, border - self.min_block_number)//self.save_every_n)
-                    if len(idx_range) == 1:
-                        self.accounts[address][0][counter] -= liability_amount
-                        self.accounts[address][1].pop(border)
-                        break
-                    else:
-                        duration = border - counter
-                        if duration > 0:
-                            ind_velocity[idx_range] += liability_amount / duration
-                        self.accounts[address][0][counter] -= liability_amount
-                        self.accounts[address][1].pop(border)
-                        break
-                else:
-                    idx_range = np.unique(np.arange(counter - self.min_block_number, border - self.min_block_number)//self.save_every_n)
-                    if len(idx_range) == 1:
-                        self.accounts[address][1][border] -= asset_amount
-                        self.accounts[address][0].pop(counter)
-                    else:
-                        duration = border - counter
-                        if duration > 0:
-                            ind_velocity[idx_range] += asset_amount / duration
-                        self.accounts[address][1][border] -= asset_amount
-                        self.accounts[address][0].pop(counter)
-        self.velocities[address] = ind_velocity
-
-    # def calculate_velocities_parallel(self):
-    #     addresses = list(self.accounts.keys())
-    #     np.random.shuffle(addresses) # Shuffle to distribute addresses with different number of transactions
-    #     chunk_size = max(1, len(addresses) // self.n_chunks)
-    #     chunks = [addresses[i:(i + chunk_size)] for i in range(0, len(addresses), chunk_size)]
-
-    #     args_list = []
-    #     for i, chunk in enumerate(chunks):
-    #         accounts_chunk = {address: self.accounts[address] for address in chunk}
-    #         args_list.append((chunk, accounts_chunk, self.min_block_number, self.save_every_n, self.LIMIT, i%self.n_cores+1))
-
-    #     with ProcessPoolExecutor(max_workers=self.n_cores) as executor:
-    #         futures = [executor.submit(process_chunk_velocities, args) for args in args_list]
-
-    #         for future in tqdm(futures, position=0):
-    #             chunk_results = future.result()
-    #             self.velocities.update(chunk_results)
-
     def save_results(self):
+        """
+        Save final results to pickle file.
+        
+        Saves a tuple containing:
+        - backup_accounts: Original account data before velocity calculation
+        - velocities: Calculated velocity arrays per address
+        - balances: Calculated balance arrays per address
+        
+        Note: If split_save is enabled, this method does nothing as results
+        are already saved incrementally.
+        """
         if self.split_save:
             return
         else:
             with open(self.output_file, 'wb') as file:
-                pickle.dump([self.backup_accounts,self.velocities, self.balances], file)
+                pickle.dump([self.backup_accounts, self.velocities, self.balances], file)
 
     def run_analysis(self):
-        print("Loading allocated data...",  self.allocated_file)
+        """
+        Execute the complete analysis pipeline.
+        
+        Pipeline steps:
+        1. Load allocated data (initial distributions)
+        2. Load transfer data (peer-to-peer transfers)
+        3. Calculate block range and number of checkpoints
+        4. Backup accounts (velocity calculation modifies them)
+        5. Calculate balances at checkpoints
+        6. Calculate velocities using LIFO matching
+        7. Save results to file(s)
+        """
+        print("Loading allocated data...", self.allocated_file)
         self.load_allocated_data()
+        
         print("Loading transfer data...", self.transfers_file)
         self.load_transfer_data()
-        print("Computing interval of ", self.save_every_n, " blocks")
+        
+        print("Computing interval of", self.save_every_n, "blocks")
         print(f"Min block number: {self.min_block_number}")
         print(f"Max block number: {self.max_block_number}")
-        self.LIMIT = (self.max_block_number - self.min_block_number)//self.save_every_n + 1
+        
+        # Calculate number of checkpoints in the analysis
+        self.LIMIT = (self.max_block_number - self.min_block_number) // self.save_every_n + 1
+        
+        # Create backup before velocity calculation (which modifies accounts)
         self.backup_accounts = self.accounts.copy()
+        
         print(f"Number of blocks considered: {self.LIMIT}")
         print("Calculating balances...")
-        if self.n_cores == 1:
-            self.calculate_balances()
-            print("Calculating velocities...")
-            self.calculate_velocities()
-        else:
-            self.calculate_balances_parallel()
-            print("Calculating velocities...")
-            self.calculate_velocities_parallel()
+        self.calculate_balances_parallel()
+        
+        print("Calculating velocities...")
+        self.calculate_velocities_parallel()
+        
         print("Saving results...")
         self.save_results()
+        
         print("Done!")
 
+
 def main():
+    """
+    Command-line interface for MicroVelocityAnalyzer.
+    
+    Parse arguments and run the analysis with specified parameters.
+    """
     parser = argparse.ArgumentParser(description='Micro Velocity Analyzer')
-    parser.add_argument('--allocated_file', type=str, default='sampledata/sample_allocated.csv', help='Path to the allocated CSV file')
-    parser.add_argument('--transfers_file', type=str, default='sampledata/sample_transfers.csv', help='Path to the transfers CSV file')
-    parser.add_argument('--output_file', type=str, default='sampledata/general_velocities.pickle', help='Path to the output file')
-    parser.add_argument('--save_every_n', type=int, default=1, help='Save every Nth position of the velocity array')
-    parser.add_argument('--n_cores', type=int, default=1, help='Number of cores to use')
-    parser.add_argument('--n_chunks', type=int, default=1, help='Number of chunks to split the data into (must be >= n_cores)')
-    parser.add_argument('--split_save', action='store_true', default=False, help='Split the save into different files')
-    parser.add_argument('--batch_size', type=int, default=1, help='Number of chunks to process in a single batch')
+    parser.add_argument('--allocated_file', type=str, default='sampledata/sample_allocated.csv', 
+                       help='Path to the allocated CSV file')
+    parser.add_argument('--transfers_file', type=str, default='sampledata/sample_transfers.csv', 
+                       help='Path to the transfers CSV file')
+    parser.add_argument('--output_file', type=str, default='sampledata/general_velocities.pickle', 
+                       help='Path to the output file')
+    parser.add_argument('--save_every_n', type=int, default=1, 
+                       help='Save every Nth position of the velocity array')
+    parser.add_argument('--n_cores', type=int, default=1, 
+                       help='Number of cores to use')
+    parser.add_argument('--n_chunks', type=int, default=1, 
+                       help='Number of chunks to split the data into (must be >= n_cores)')
+    parser.add_argument('--split_save', action='store_true', default=False, 
+                       help='Split the save into different files')
+    parser.add_argument('--batch_size', type=int, default=1, 
+                       help='Number of chunks to process in a single batch')
     args = parser.parse_args()
 
     analyzer = MicroVelocityAnalyzer(
@@ -461,5 +564,7 @@ def main():
     )
     analyzer.run_analysis()
 
+
 if __name__ == "__main__":
     main()
+
