@@ -24,19 +24,20 @@ def process_chunk_balances_v2(args):
     Calculate account balances for a chunk of addresses (parallel worker function).
     
     This function processes a subset of addresses to compute their balance at regular
-    block intervals. It iterates through all blocks where balance changes occur and
-    updates the running balance accordingly.
+    checkpoint blocks. For each checkpoint, it applies all balance changes that
+    occurred up to and including that block, ensuring balances are correctly carried
+    forward between transactions.
     
     Args:
-        args: Tuple containing (addresses, accounts_chunk, min_block_number, 
+        args: Tuple containing (addresses, accounts_chunk, min_block_number,
               max_block_number, save_every_n, LIMIT, pos)
     
     Returns:
-        dict: Maps address -> numpy array of balances at each checkpoint
+        dict: Maps address -> numpy array (dtype=object) of balances at each checkpoint
     """
     addresses, accounts_chunk, min_block_number, max_block_number, save_every_n, LIMIT, pos = args
     
-    # Calculate checkpoint block numbers where balances will be saved
+    # Precompute checkpoint block numbers where balances will be recorded
     save_block_numbers = [min_block_number + i * save_every_n for i in range(LIMIT)]
 
     results = {}
@@ -44,39 +45,31 @@ def process_chunk_balances_v2(args):
     for address in tqdm(addresses, position=pos, leave=False):
         # Use Python's arbitrary-precision integer for exact arithmetic
         current_balance = 0
-        
-        # Get all unique block numbers where this address had transactions (assets or liabilities)
-        block_numbers = set(accounts_chunk[address][0].keys()).union(set(accounts_chunk[address][1].keys()))
-        block_numbers = sorted(block_numbers)
 
-        # Initialize balance array for all checkpoints
-        # Using object dtype to store Python's arbitrary-precision integers
-        # This ensures exact integer arithmetic (no floating-point precision loss)
+        # Collect all balance changes as (block_number, delta_amount)
+        balance_changes = []
+        for block_number, amount in accounts_chunk[address][0].items():
+            balance_changes.append((int(block_number), int(amount)))  # assets: +amount
+        for block_number, amount in accounts_chunk[address][1].items():
+            balance_changes.append((int(block_number), -int(amount)))  # liabilities: -amount
+
+        # Sort changes chronologically
+        balance_changes.sort(key=lambda x: x[0])
+
+        # Initialize balance array for all checkpoints (carry-forward semantics)
         balances = np.empty(len(save_block_numbers), dtype=object)
-        balances.fill(0)  # Fill with integer 0, not float
-        
-        # Process each block where transactions occurred
-        for block in block_numbers:
-            # Add incoming tokens (assets)
-            if block in accounts_chunk[address][0]:
-                current_balance += accounts_chunk[address][0][block]
-            
-            # Subtract outgoing tokens (liabilities)
-            if block in accounts_chunk[address][1]:
-                current_balance -= accounts_chunk[address][1][block]
-            
-            # Calculate which checkpoint index this block corresponds to
-            if save_every_n > 1:
-                idx = (block - min_block_number) // save_every_n + 1
-            else:
-                idx = block - min_block_number
+        balances.fill(0)  # Fill with integer 0
 
-            if idx < len(balances):
-                balances[idx] = current_balance
+        change_idx = 0
+        # For each checkpoint, apply all changes up to and including that checkpoint's block
+        for i, checkpoint_block in enumerate(save_block_numbers):
+            while change_idx < len(balance_changes) and balance_changes[change_idx][0] <= checkpoint_block:
+                current_balance += balance_changes[change_idx][1]
+                change_idx += 1
+            balances[i] = current_balance
 
         results[address] = balances
-        del balances
-    
+
     return results
 
 
