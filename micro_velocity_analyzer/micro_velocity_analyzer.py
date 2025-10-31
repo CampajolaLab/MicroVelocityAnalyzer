@@ -32,19 +32,20 @@ def process_chunk_balances_v2(args):
         args: Tuple containing (addresses, accounts_chunk, min_block_number,
               max_block_number, save_every_n, LIMIT, pos)
     
+
     Returns:
-        dict: Maps address -> numpy array (dtype=object) of balances at each checkpoint
+        dict: Maps address -> list of (block, balance) tuples (sparse storage, only when balance changes)
     """
     addresses, accounts_chunk, min_block_number, max_block_number, save_every_n, LIMIT, pos = args
-    
+
     # Precompute checkpoint block numbers where balances will be recorded
     save_block_numbers = [min_block_number + i * save_every_n for i in range(LIMIT)]
 
     results = {}
 
     for address in tqdm(addresses, position=pos, leave=False):
-        # Use Python's arbitrary-precision integer for exact arithmetic
         current_balance = 0
+        sparse_balances = []  # List of (block, balance) tuples
 
         # Collect all balance changes as (block_number, delta_amount)
         balance_changes = []
@@ -56,19 +57,17 @@ def process_chunk_balances_v2(args):
         # Sort changes chronologically
         balance_changes.sort(key=lambda x: x[0])
 
-        # Initialize balance array for all checkpoints (carry-forward semantics)
-        balances = np.empty(len(save_block_numbers), dtype=object)
-        balances.fill(0)  # Fill with integer 0
-
         change_idx = 0
-        # For each checkpoint, apply all changes up to and including that checkpoint's block
         for i, checkpoint_block in enumerate(save_block_numbers):
+            old_balance = current_balance
             while change_idx < len(balance_changes) and balance_changes[change_idx][0] <= checkpoint_block:
                 current_balance += balance_changes[change_idx][1]
                 change_idx += 1
-            balances[i] = current_balance
+            # Only store if balance changed or first checkpoint
+            if current_balance != old_balance or i == 0:
+                sparse_balances.append((checkpoint_block, current_balance))
 
-        results[address] = balances
+        results[address] = sparse_balances
 
     return results
 
@@ -469,22 +468,31 @@ class MicroVelocityAnalyzer:
                     
                     del futures
 
-    def save_results(self):
+
+    def save_balances(self):
         """
-        Save final results to pickle file.
-        
-        Saves a tuple containing:
-        - velocities: Calculated velocity arrays per address
-        - balances: Calculated balance arrays per address
-        
-        Note: If split_save is enabled, this method does nothing as results
-        are already saved incrementally.
+        Save balances to pickle file and clear from memory.
         """
         if self.split_save:
             return
         else:
-            with open(self.output_file, 'wb') as file:
-                pickle.dump([self.velocities, self.balances], file)
+            balances_file = self.output_file.replace('.pickle', '_balances.pickle')
+            with open(balances_file, 'wb') as file:
+                pickle.dump(self.balances, file)
+            print(f"Balances saved to {balances_file}. Clearing balances from memory.")
+            self.balances = {}  # Free memory
+
+    def save_velocities(self):
+        """
+        Save velocities to pickle file.
+        """
+        if self.split_save:
+            return
+        else:
+            velocities_file = self.output_file.replace('.pickle', '_velocities.pickle')
+            with open(velocities_file, 'wb') as file:
+                pickle.dump(self.velocities, file)
+            print(f"Velocities saved to {velocities_file}.")
 
     def run_analysis(self):
         """
@@ -496,8 +504,9 @@ class MicroVelocityAnalyzer:
         3. Calculate block range and number of checkpoints
         4. Backup accounts (velocity calculation modifies them)
         5. Calculate balances at checkpoints
-        6. Calculate velocities using LIFO matching
-        7. Save results to file(s)
+        6. Save balances and clear from memory
+        7. Calculate velocities using LIFO matching
+        8. Save velocities to file(s)
         """
         print("Loading allocated data...", self.allocated_file)
         self.load_allocated_data()
@@ -519,11 +528,14 @@ class MicroVelocityAnalyzer:
         print("Calculating balances...")
         self.calculate_balances_parallel()
         
+        print("Saving balances and clearing from memory...")
+        self.save_balances()
+        
         print("Calculating velocities...")
         self.calculate_velocities_parallel()
         
-        print("Saving results...")
-        self.save_results()
+        print("Saving velocities...")
+        self.save_velocities()
         
         print("Done!")
 
