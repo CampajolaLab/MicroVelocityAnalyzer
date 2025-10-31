@@ -89,7 +89,7 @@ def process_chunk_velocities(args):
               save_every_n, LIMIT, pos)
     
     Returns:
-        dict: Maps address -> numpy array of velocities at each checkpoint
+        dict: Maps address -> list of (block, velocity) tuples (sparse: only nonzero checkpoints)
     """
     addresses, accounts_chunk, min_block_number, save_every_n, LIMIT, pos = args
     results = {}
@@ -100,8 +100,8 @@ def process_chunk_velocities(args):
             # Get sorted lists of liability (outgoing) block numbers
             sorted_out_blocks = sorted(list(accounts_chunk[address][1].keys()))
 
-            # Initialize velocity array for all time intervals
-            ind_velocity = np.zeros(LIMIT, dtype=np.float64)
+            # Sparse velocity accumulator: checkpoint_block -> velocity value (float)
+            velocity_map = {}
 
             # Process each outgoing transaction (liability)
             for outgoing_block in sorted_out_blocks:
@@ -134,7 +134,11 @@ def process_chunk_velocities(args):
                             # Calculate velocity: amount / time duration
                             duration = outgoing_block - incoming_block
                             if duration > 0:
-                                ind_velocity[idx_range] += outgoing_amount / duration
+                                add_val = outgoing_amount / duration
+                                # Add contribution to each checkpoint in range
+                                for idx in idx_range:
+                                    checkpoint_block = min_block_number + int(idx) * save_every_n
+                                    velocity_map[checkpoint_block] = velocity_map.get(checkpoint_block, 0.0) + add_val
 
                             # Update remaining amounts
                             accounts_chunk[address][0][incoming_block] -= outgoing_amount
@@ -154,12 +158,20 @@ def process_chunk_velocities(args):
                             # Calculate velocity for the partial amount
                             duration = outgoing_block - incoming_block
                             if duration > 0:
-                                ind_velocity[idx_range] += incoming_amount / duration
+                                add_val = incoming_amount / duration
+                                for idx in idx_range:
+                                    checkpoint_block = min_block_number + int(idx) * save_every_n
+                                    velocity_map[checkpoint_block] = velocity_map.get(checkpoint_block, 0.0) + add_val
 
                             # Update remaining amounts and continue to next incoming transaction
                             accounts_chunk[address][1][outgoing_block] -= incoming_amount
                             accounts_chunk[address][0].pop(incoming_block)
-            results[address] = ind_velocity
+            # Convert to sorted sparse list of (block, velocity) for nonzero entries
+            if velocity_map:
+                sparse_velocities = sorted(velocity_map.items(), key=lambda x: x[0])
+                results[address] = sparse_velocities
+            else:
+                results[address] = []
     
     return results
 
