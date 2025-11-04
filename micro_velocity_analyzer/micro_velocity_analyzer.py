@@ -84,12 +84,17 @@ def process_chunk_velocities(args):
     The LIFO approach assumes that the most recently received tokens are spent first,
     which makes economic sense by effectively separating savings from spending.
     
+    This version stores velocities ONLY at transaction blocks (incoming/outgoing), making
+    save_every_n irrelevant for velocity calculation. Velocity changes only when transactions
+    occur, so this approach maximally compresses storage without losing information.
+    
     Args:
         args: Tuple containing (addresses, accounts_chunk, min_block_number, 
               save_every_n, LIMIT, pos)
+              Note: save_every_n is not used for velocity calculation
     
     Returns:
-        dict: Maps address -> list of (block, velocity) tuples (sparse: only nonzero checkpoints)
+        dict: Maps address -> list of (block, velocity) tuples at transaction blocks only
     """
     addresses, accounts_chunk, min_block_number, save_every_n, LIMIT, pos = args
     results = {}
@@ -100,22 +105,23 @@ def process_chunk_velocities(args):
             # Get sorted lists of liability (outgoing) block numbers
             sorted_out_blocks = sorted(list(accounts_chunk[address][1].keys()))
 
-            # Sparse velocity accumulator: checkpoint_block -> velocity value (float)
-            velocity_map = {}
+            # Track velocity contributions at each transaction block
+            # We'll accumulate velocity changes and then compute running totals
+            velocity_changes = {}  # block -> delta_velocity
+            
+            # Collect all transaction blocks where velocity might change
+            all_tx_blocks = set(accounts_chunk[address][0].keys()) | set(accounts_chunk[address][1].keys())
 
             # Process each outgoing transaction (liability)
             for outgoing_block in sorted_out_blocks:
                 # Refresh list of available incoming transactions (assets)
                 sorted_in_blocks = sorted(list(accounts_chunk[address][0].keys()))
-                incoming_blocks = np.array(sorted_in_blocks, dtype=int)
 
-                # Find all incoming transactions that occurred before this outgoing transaction
-                eligible_incoming_blocks = incoming_blocks[incoming_blocks < outgoing_block]
-                
-                # Iterate through them in LIFO order (most recent first)
-                for i in range(len(eligible_incoming_blocks) - 1, -1, -1):
-                    # LIFO: Select from end of array (most recent incoming transaction)
-                    incoming_block = eligible_incoming_blocks[i]
+                # Find all incoming transactions that occurred before this outgoing transaction (LIFO order)
+                # Iterate from most recent to oldest
+                for incoming_block in reversed(sorted_in_blocks):
+                    if incoming_block >= outgoing_block:
+                        continue  # Skip future incoming transactions
 
                     # Keep as integers for exact arithmetic (Python arbitrary precision)
                     incoming_amount = int(accounts_chunk[address][0][incoming_block])
@@ -123,10 +129,7 @@ def process_chunk_velocities(args):
 
                     # Case 1: Incoming amount covers (or exceeds) the outgoing amount
                     if (incoming_amount - outgoing_amount) >= 0:
-                        # Calculate which time intervals this token movement spans
-                        idx_range = np.unique(np.arange(incoming_block - min_block_number, outgoing_block - min_block_number)//save_every_n)
-
-                        if len(idx_range) == 1:
+                        if incoming_block == outgoing_block:
                             # Through transaction - just reduce the net incoming amount
                             accounts_chunk[address][0][incoming_block] -= outgoing_amount
                             accounts_chunk[address][1].pop(outgoing_block)
@@ -135,12 +138,11 @@ def process_chunk_velocities(args):
                             # Calculate velocity: amount / time duration
                             duration = outgoing_block - incoming_block
                             if duration > 0:
-                                # Use Python's division for arbitrary precision int -> float
-                                add_val = float(outgoing_amount) / float(duration)
-                                # Add contribution to each checkpoint in range
-                                for idx in idx_range:
-                                    checkpoint_block = min_block_number + int(idx) * save_every_n
-                                    velocity_map[checkpoint_block] = velocity_map.get(checkpoint_block, 0.0) + add_val
+                                velocity_contrib = float(outgoing_amount) / float(duration)
+                                # Add velocity at incoming block (when tokens start moving)
+                                velocity_changes[incoming_block] = velocity_changes.get(incoming_block, 0.0) + velocity_contrib
+                                # Subtract velocity at outgoing block (when tokens stop moving)
+                                velocity_changes[outgoing_block] = velocity_changes.get(outgoing_block, 0.0) - velocity_contrib
 
                             # Update remaining amounts
                             accounts_chunk[address][0][incoming_block] -= outgoing_amount
@@ -149,10 +151,7 @@ def process_chunk_velocities(args):
 
                     # Case 2: Incoming amount is less than outgoing - partial match
                     else:
-                        # Calculate which time intervals this token movement spans
-                        idx_range = np.unique(np.arange(incoming_block - min_block_number, outgoing_block - min_block_number)//save_every_n)
-
-                        if len(idx_range) == 1:
+                        if incoming_block == outgoing_block:
                             # Through transaction - reduce liability and consume entire asset
                             accounts_chunk[address][1][outgoing_block] -= incoming_amount
                             accounts_chunk[address][0].pop(incoming_block)
@@ -160,18 +159,28 @@ def process_chunk_velocities(args):
                             # Calculate velocity for the partial amount
                             duration = outgoing_block - incoming_block
                             if duration > 0:
-                                # Use Python's division for arbitrary precision int -> float
-                                add_val = float(incoming_amount) / float(duration)
-                                for idx in idx_range:
-                                    checkpoint_block = min_block_number + int(idx) * save_every_n
-                                    velocity_map[checkpoint_block] = velocity_map.get(checkpoint_block, 0.0) + add_val
+                                velocity_contrib = float(incoming_amount) / float(duration)
+                                # Add velocity at incoming block (when tokens start moving)
+                                velocity_changes[incoming_block] = velocity_changes.get(incoming_block, 0.0) + velocity_contrib
+                                # Subtract velocity at outgoing block (when tokens stop moving)
+                                velocity_changes[outgoing_block] = velocity_changes.get(outgoing_block, 0.0) - velocity_contrib
 
                             # Update remaining amounts and continue to next incoming transaction
                             accounts_chunk[address][1][outgoing_block] -= incoming_amount
                             accounts_chunk[address][0].pop(incoming_block)
-            # Convert to sorted sparse list of (block, velocity) for nonzero entries
-            if velocity_map:
-                sparse_velocities = sorted(velocity_map.items(), key=lambda x: x[0])
+            
+            # Convert velocity_changes to running total sparse list
+            if velocity_changes:
+                sorted_blocks = sorted(velocity_changes.keys())
+                sparse_velocities = []
+                running_velocity = 0.0
+                
+                for block in sorted_blocks:
+                    running_velocity += velocity_changes[block]
+                    # Only store if velocity is non-zero (or if it just became zero)
+                    if running_velocity != 0.0 or sparse_velocities:
+                        sparse_velocities.append((block, running_velocity))
+                
                 results[address] = sparse_velocities
             else:
                 results[address] = []
