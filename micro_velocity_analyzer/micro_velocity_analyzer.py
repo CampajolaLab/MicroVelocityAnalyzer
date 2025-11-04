@@ -23,30 +23,28 @@ def process_chunk_balances_v2(args):
     """
     Calculate account balances for a chunk of addresses (parallel worker function).
     
-    This function processes a subset of addresses to compute their balance at regular
-    checkpoint blocks. For each checkpoint, it applies all balance changes that
-    occurred up to and including that block, ensuring balances are correctly carried
-    forward between transactions.
+    This function processes a subset of addresses to compute their balance only at
+    transaction blocks where balance changes occur. This sparse storage approach
+    matches the velocity calculation and makes save_every_n irrelevant for balances.
+    
+    Balances only change when transactions occur (assets received or liabilities sent),
+    so storing only at transaction blocks provides maximum compression without losing
+    information.
     
     Args:
         args: Tuple containing (addresses, accounts_chunk, min_block_number,
               max_block_number, save_every_n, LIMIT, pos, chunk_id)
+              Note: save_every_n and LIMIT are not used for balance calculation
     
 
     Returns:
-        dict: Maps address -> list of (block, balance) tuples (sparse storage, only when balance changes)
+        dict: Maps address -> list of (block, balance) tuples at transaction blocks only
     """
     addresses, accounts_chunk, min_block_number, max_block_number, save_every_n, LIMIT, pos, chunk_id = args
-
-    # Precompute checkpoint block numbers where balances will be recorded
-    save_block_numbers = [min_block_number + i * save_every_n for i in range(LIMIT)]
 
     results = {}
 
     for address in tqdm(addresses, position=pos, leave=False, desc=f"Core {pos} [Chunk {chunk_id}]"):
-        current_balance = 0
-        sparse_balances = []  # List of (block, balance) tuples
-
         # Collect all balance changes as (block_number, delta_amount)
         balance_changes = []
         for block_number, amount in accounts_chunk[address][0].items():
@@ -57,15 +55,14 @@ def process_chunk_balances_v2(args):
         # Sort changes chronologically
         balance_changes.sort(key=lambda x: x[0])
 
-        change_idx = 0
-        for i, checkpoint_block in enumerate(save_block_numbers):
-            old_balance = current_balance
-            while change_idx < len(balance_changes) and balance_changes[change_idx][0] <= checkpoint_block:
-                current_balance += balance_changes[change_idx][1]
-                change_idx += 1
-            # Only store if balance changed or first checkpoint
-            if current_balance != old_balance or i == 0:
-                sparse_balances.append((checkpoint_block, current_balance))
+        # Build sparse balances by accumulating changes at transaction blocks
+        sparse_balances = []
+        current_balance = 0
+        
+        for block, delta in balance_changes:
+            current_balance += delta
+            # Store balance at this transaction block
+            sparse_balances.append((block, current_balance))
 
         results[address] = sparse_balances
 
