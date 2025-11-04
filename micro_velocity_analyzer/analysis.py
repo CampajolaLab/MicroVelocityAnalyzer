@@ -192,6 +192,11 @@ def main():
     lg = sub.add_parser("longitudinal", help="Emit sparse ratio series for a single address")
     lg.add_argument("--address", required=True, help="Address to analyze")
     lg.add_argument("--min-denominator", type=int, default=1)
+    
+    batch = sub.add_parser("batch-cross-section", help="Extract cross-sections at multiple blocks and save to files")
+    batch.add_argument("--blocks-file", required=True, help="Path to pickle file containing list of block numbers")
+    batch.add_argument("--output-folder", required=True, help="Folder where cross-section pickles will be saved")
+    batch.add_argument("--min-denominator", type=int, default=1, help="Minimum balance to include in ratio")
 
     args = parser.parse_args()
 
@@ -215,6 +220,65 @@ def main():
         sparse_ratio = ratio_sparse(b, v, min_denominator=args.min_denominator)
         for blk, r in sparse_ratio:
             print(blk, r)
+    
+    if args.cmd == "batch-cross-section":
+        # Load block numbers from pickle file
+        with open(args.blocks_file, 'rb') as f:
+            block_numbers = pickle.load(f)
+        
+        # Create output folder if it doesn't exist
+        os.makedirs(args.output_folder, exist_ok=True)
+        
+        # Load balances and velocities
+        print("Loading balances and velocities...")
+        if os.path.isdir(args.balances) or os.path.isdir(args.velocities):
+            print("Warning: directory mode is experimental; prefer single-file pickles for analysis.")
+        bal_map = _load_balances_map(args.balances) if os.path.isfile(args.balances) else dict(_iter_balances(args.balances))
+        vel_map = _load_velocities_map(args.velocities) if os.path.isfile(args.velocities) else dict(_iter_balances(args.velocities))
+        
+        # Process each block
+        from tqdm import tqdm
+        for block in tqdm(block_numbers, desc="Processing blocks"):
+            # Extract cross-sectional balances
+            balances_xsect = {}
+            for addr in bal_map.keys():
+                bal_series = bal_map.get(addr, [])
+                bal = _value_at_block(bal_series, block)
+                if bal != 0:  # Only store non-zero balances
+                    balances_xsect[addr] = bal
+            
+            # Extract cross-sectional velocities
+            velocities_xsect = {}
+            for addr in vel_map.keys():
+                vel_series = vel_map.get(addr, [])
+                vel = _value_at_block(vel_series, block)
+                if vel != 0:  # Only store non-zero velocities
+                    velocities_xsect[addr] = vel
+            
+            # Extract cross-sectional ratios (velocity/balance)
+            ratios_xsect = {}
+            for addr in bal_map.keys():
+                bal_series = bal_map.get(addr, [])
+                vel_series = vel_map.get(addr, [])
+                bal = _value_at_block(bal_series, block)
+                if isinstance(bal, int) and bal >= args.min_denominator:
+                    vel = _value_at_block(vel_series, block)
+                    ratios_xsect[addr] = float(vel) / float(bal)
+            
+            # Save to files
+            balance_file = os.path.join(args.output_folder, f"xsect_balance_block_{block}.pickle")
+            velocity_file = os.path.join(args.output_folder, f"xsect_velocity_block_{block}.pickle")
+            ratio_file = os.path.join(args.output_folder, f"xsect_ratio_block_{block}.pickle")
+            
+            with open(balance_file, 'wb') as f:
+                pickle.dump(balances_xsect, f)
+            with open(velocity_file, 'wb') as f:
+                pickle.dump(velocities_xsect, f)
+            with open(ratio_file, 'wb') as f:
+                pickle.dump(ratios_xsect, f)
+        
+        print(f"Cross-sections saved to {args.output_folder}")
+
 
 
 if __name__ == "__main__":
