@@ -30,20 +30,20 @@ def process_chunk_balances_v2(args):
     
     Args:
         args: Tuple containing (addresses, accounts_chunk, min_block_number,
-              max_block_number, save_every_n, LIMIT, pos)
+              max_block_number, save_every_n, LIMIT, pos, disable_progress)
     
 
     Returns:
         dict: Maps address -> list of (block, balance) tuples (sparse storage, only when balance changes)
     """
-    addresses, accounts_chunk, min_block_number, max_block_number, save_every_n, LIMIT, pos = args
+    addresses, accounts_chunk, min_block_number, max_block_number, save_every_n, LIMIT, pos, disable_progress = args
 
     # Precompute checkpoint block numbers where balances will be recorded
     save_block_numbers = [min_block_number + i * save_every_n for i in range(LIMIT)]
 
     results = {}
 
-    for address in tqdm(addresses, position=pos, leave=False):
+    for address in tqdm(addresses, position=pos, leave=True, disable=disable_progress, desc=f"Worker {pos}"):
         current_balance = 0
         sparse_balances = []  # List of (block, balance) tuples
 
@@ -90,16 +90,16 @@ def process_chunk_velocities(args):
     
     Args:
         args: Tuple containing (addresses, accounts_chunk, min_block_number, 
-              save_every_n, LIMIT, pos)
+              save_every_n, LIMIT, pos, disable_progress)
               Note: save_every_n is not used for velocity calculation
     
     Returns:
         dict: Maps address -> list of (block, velocity) tuples at transaction blocks only
     """
-    addresses, accounts_chunk, min_block_number, save_every_n, LIMIT, pos = args
+    addresses, accounts_chunk, min_block_number, save_every_n, LIMIT, pos, disable_progress = args
     results = {}
     
-    for address in tqdm(addresses, position=pos, leave=False):
+    for address in tqdm(addresses, position=pos, leave=True, disable=disable_progress, desc=f"Worker {pos}"):
         # Only calculate velocity if address has both incoming and outgoing transactions
         if len(accounts_chunk[address][0]) > 0 and len(accounts_chunk[address][1]) > 0:
             # Get sorted lists of liability (outgoing) block numbers
@@ -416,7 +416,7 @@ class MicroVelocityAnalyzer:
                     accounts_chunk = {address: self.accounts[address] for address in chunk}
                     args = (chunk, accounts_chunk, self.min_block_number, 
                            self.max_block_number, self.save_every_n, 
-                           self.LIMIT, (chunk_idx % self.n_cores) + 1)
+                           self.LIMIT, (chunk_idx % self.n_cores) + 1, False)  # disable_progress=False
                     future = executor.submit(process_chunk_balances_v2, args)
                     futures[future] = chunk
                     chunk_idx += 1
@@ -444,7 +444,7 @@ class MicroVelocityAnalyzer:
                         accounts_chunk = {address: self.accounts[address] for address in chunk}
                         args = (chunk, accounts_chunk, self.min_block_number, 
                                self.max_block_number, self.save_every_n, 
-                               self.LIMIT, (chunk_idx % self.n_cores) + 1)
+                               self.LIMIT, (chunk_idx % self.n_cores) + 1, False)  # disable_progress=False
                         future = executor.submit(process_chunk_balances_v2, args)
                         futures[future] = chunk
                         chunk_idx += 1
@@ -490,7 +490,7 @@ class MicroVelocityAnalyzer:
                     chunk = chunks[chunk_idx]
                     accounts_chunk = {address: self.accounts[address] for address in chunk}
                     args = (chunk, accounts_chunk, self.min_block_number, 
-                           self.save_every_n, self.LIMIT, (chunk_idx % self.n_cores) + 1)
+                           self.save_every_n, self.LIMIT, (chunk_idx % self.n_cores) + 1, False)  # disable_progress=False
                     future = executor.submit(process_chunk_velocities, args)
                     futures[future] = chunk
                     chunk_idx += 1
@@ -517,7 +517,7 @@ class MicroVelocityAnalyzer:
                         chunk = chunks[chunk_idx]
                         accounts_chunk = {address: self.accounts[address] for address in chunk}
                         args = (chunk, accounts_chunk, self.min_block_number, 
-                               self.save_every_n, self.LIMIT, (chunk_idx % self.n_cores) + 1)
+                               self.save_every_n, self.LIMIT, (chunk_idx % self.n_cores) + 1, False)  # disable_progress=False
                         future = executor.submit(process_chunk_velocities, args)
                         futures[future] = chunk
                         chunk_idx += 1
