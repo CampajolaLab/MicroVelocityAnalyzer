@@ -117,8 +117,9 @@ def process_chunk_velocities(args):
                     # LIFO: Select from end of array (most recent incoming transaction)
                     incoming_block = eligible_incoming_blocks[i]
 
-                    incoming_amount = float(accounts_chunk[address][0][incoming_block])
-                    outgoing_amount = float(accounts_chunk[address][1][outgoing_block])
+                    # Keep as integers for exact arithmetic (Python arbitrary precision)
+                    incoming_amount = int(accounts_chunk[address][0][incoming_block])
+                    outgoing_amount = int(accounts_chunk[address][1][outgoing_block])
 
                     # Case 1: Incoming amount covers (or exceeds) the outgoing amount
                     if (incoming_amount - outgoing_amount) >= 0:
@@ -134,7 +135,8 @@ def process_chunk_velocities(args):
                             # Calculate velocity: amount / time duration
                             duration = outgoing_block - incoming_block
                             if duration > 0:
-                                add_val = outgoing_amount / duration
+                                # Use Python's division for arbitrary precision int -> float
+                                add_val = float(outgoing_amount) / float(duration)
                                 # Add contribution to each checkpoint in range
                                 for idx in idx_range:
                                     checkpoint_block = min_block_number + int(idx) * save_every_n
@@ -158,7 +160,8 @@ def process_chunk_velocities(args):
                             # Calculate velocity for the partial amount
                             duration = outgoing_block - incoming_block
                             if duration > 0:
-                                add_val = incoming_amount / duration
+                                # Use Python's division for arbitrary precision int -> float
+                                add_val = float(incoming_amount) / float(duration)
                                 for idx in idx_range:
                                     checkpoint_block = min_block_number + int(idx) * save_every_n
                                     velocity_map[checkpoint_block] = velocity_map.get(checkpoint_block, 0.0) + add_val
