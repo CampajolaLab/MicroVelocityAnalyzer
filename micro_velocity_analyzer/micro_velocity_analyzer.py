@@ -43,7 +43,7 @@ def process_chunk_balances_v2(args):
 
     results = {}
 
-    for address in tqdm(addresses, position=pos, leave=True, desc=f"Core {pos} [Chunk {chunk_id}]"):
+    for address in tqdm(addresses, position=pos, leave=False, desc=f"Core {pos} [Chunk {chunk_id}]"):
         current_balance = 0
         sparse_balances = []  # List of (block, balance) tuples
 
@@ -99,7 +99,7 @@ def process_chunk_velocities(args):
     addresses, accounts_chunk, min_block_number, save_every_n, LIMIT, pos, chunk_id = args
     results = {}
     
-    for address in tqdm(addresses, position=pos, leave=True, desc=f"Core {pos} [Chunk {chunk_id}]"):
+    for address in tqdm(addresses, position=pos, leave=False, desc=f"Core {pos} [Chunk {chunk_id}]"):
         # Only calculate velocity if address has both incoming and outgoing transactions
         if len(accounts_chunk[address][0]) > 0 and len(accounts_chunk[address][1]) > 0:
             # Get sorted lists of liability (outgoing) block numbers
