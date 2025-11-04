@@ -509,7 +509,7 @@ class MicroVelocityAnalyzer:
                 pickle.dump(self.velocities, file)
             print(f"Velocities saved to {velocities_file}.")
 
-    def run_analysis(self):
+    def run_analysis(self, balances_only=False, velocities_only=False):
         """
         Execute the complete analysis pipeline.
         
@@ -518,10 +518,14 @@ class MicroVelocityAnalyzer:
         2. Load transfer data (peer-to-peer transfers)
         3. Calculate block range and number of checkpoints
         4. Backup accounts (velocity calculation modifies them)
-        5. Calculate balances at checkpoints
-        6. Save balances and clear from memory
-        7. Calculate velocities using LIFO matching
-        8. Save velocities to file(s)
+        5. Calculate balances at checkpoints (unless velocities_only)
+        6. Save balances and clear from memory (unless velocities_only)
+        7. Calculate velocities using LIFO matching (unless balances_only)
+        8. Save velocities to file(s) (unless balances_only)
+        
+        Args:
+            balances_only (bool): If True, calculate and save only balances
+            velocities_only (bool): If True, calculate and save only velocities
         """
         print("Loading allocated data...", self.allocated_file)
         self.load_allocated_data()
@@ -540,17 +544,20 @@ class MicroVelocityAnalyzer:
         self.backup_accounts = self.accounts.copy()
         
         print(f"Number of blocks considered: {self.LIMIT}")
-        print("Calculating balances...")
-        self.calculate_balances_parallel()
         
-        print("Saving balances and clearing from memory...")
-        self.save_balances()
+        if not velocities_only:
+            print("Calculating balances...")
+            self.calculate_balances_parallel()
+            
+            print("Saving balances and clearing from memory...")
+            self.save_balances()
         
-        print("Calculating velocities...")
-        self.calculate_velocities_parallel()
-        
-        print("Saving velocities...")
-        self.save_velocities()
+        if not balances_only:
+            print("Calculating velocities...")
+            self.calculate_velocities_parallel()
+            
+            print("Saving velocities...")
+            self.save_velocities()
         
         print("Done!")
 
@@ -578,7 +585,15 @@ def main():
                        help='Split the save into different files')
     parser.add_argument('--batch_size', type=int, default=1, 
                        help='Number of chunks to process in a single batch')
+    parser.add_argument('--balances_only', action='store_true', default=False,
+                       help='Calculate and save only balances (skip velocities)')
+    parser.add_argument('--velocities_only', action='store_true', default=False,
+                       help='Calculate and save only velocities (skip balances)')
     args = parser.parse_args()
+    
+    # Validate mutually exclusive options
+    if args.balances_only and args.velocities_only:
+        parser.error("--balances_only and --velocities_only are mutually exclusive")
 
     analyzer = MicroVelocityAnalyzer(
         allocated_file=args.allocated_file,
@@ -590,7 +605,12 @@ def main():
         split_save=args.split_save,
         batch_size=args.batch_size
     )
-    analyzer.run_analysis()
+    
+    # Run analysis with optional flags
+    analyzer.run_analysis(
+        balances_only=args.balances_only,
+        velocities_only=args.velocities_only
+    )
 
 
 if __name__ == "__main__":
