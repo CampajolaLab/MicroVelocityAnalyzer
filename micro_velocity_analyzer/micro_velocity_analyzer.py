@@ -379,16 +379,17 @@ class MicroVelocityAnalyzer:
 
     def calculate_balances_parallel(self):
         """
-        Calculate account balances using parallel processing.
+        Calculate account balances using parallel processing with rolling queue.
         
         Distributes addresses across multiple worker processes to calculate balances
-        at regular block intervals. Can optionally save results incrementally if
-        split_save is enabled.
+        at regular block intervals. Uses a rolling queue where new chunks are submitted
+        as soon as a worker finishes, eliminating idle time from waiting for slow workers.
         
         The parallel execution model:
         1. Split addresses into n_chunks
-        2. Process chunks in batches of (n_cores * batch_size)
-        3. Optionally save intermediate results to avoid memory overflow
+        2. Keep up to n_cores workers busy at all times
+        3. Submit new work as soon as a worker completes
+        4. Optionally save intermediate results to avoid memory overflow
         """
         addresses = list(self.accounts.keys())
         
@@ -401,48 +402,65 @@ class MicroVelocityAnalyzer:
         chunks = [addresses[i:(i + chunk_size)] for i in range(0, len(addresses), chunk_size)]
         
         total_chunks = len(chunks)
-        processed_chunks = 0
         batch_results = {}
         
         with ProcessPoolExecutor(max_workers=self.n_cores) as executor:
             with tqdm(total=total_chunks, desc="Processing chunks") as pbar:
-                while processed_chunks < total_chunks:
-                    # Process batches to control memory usage
-                    current_batch = chunks[processed_chunks:processed_chunks + self.n_cores*self.batch_size]
-                    futures = []
+                # Submit initial batch of work (up to n_cores chunks)
+                futures = {}
+                chunk_idx = 0
+                
+                # Fill the worker pool with initial jobs
+                while chunk_idx < min(self.n_cores, total_chunks):
+                    chunk = chunks[chunk_idx]
+                    accounts_chunk = {address: self.accounts[address] for address in chunk}
+                    args = (chunk, accounts_chunk, self.min_block_number, 
+                           self.max_block_number, self.save_every_n, 
+                           self.LIMIT, (chunk_idx % self.n_cores) + 1)
+                    future = executor.submit(process_chunk_balances_v2, args)
+                    futures[future] = chunk
+                    chunk_idx += 1
+                
+                # Process results and submit new work as workers complete
+                while futures:
+                    # Wait for at least one future to complete
+                    done, _ = as_completed(futures).__next__(), None
                     
-                    # Submit worker jobs for this batch
-                    for i, chunk in enumerate(current_batch):
+                    # Get result and clean up
+                    chunk_results = done.result()
+                    completed_chunk = futures.pop(done)
+                    batch_results.update(chunk_results)
+                    pbar.update(1)
+                    
+                    # Handle split_save if needed
+                    if self.split_save and len(batch_results) >= self.batch_size * len(completed_chunk):
+                        last_address = list(batch_results.keys())[-1]
+                        self._save_split_results(batch_results, 'balances', last_address)
+                        batch_results = {}
+                    
+                    # Submit new work if chunks remain
+                    if chunk_idx < total_chunks:
+                        chunk = chunks[chunk_idx]
                         accounts_chunk = {address: self.accounts[address] for address in chunk}
                         args = (chunk, accounts_chunk, self.min_block_number, 
                                self.max_block_number, self.save_every_n, 
-                               self.LIMIT, i + 1)
-                        futures.append(executor.submit(process_chunk_balances_v2, args))
-                    
-                    # Collect results as they complete
-                    for future in as_completed(futures):
-                        chunk_results = future.result()
-                        batch_results.update(chunk_results)
-                        processed_chunks += 1
-                        pbar.update(1)
-                    
-                    # Handle results based on split_save setting
-                    if self.split_save:
-                        last_address = current_batch[-1][-1]
-                        self._save_split_results(batch_results, 'balances', last_address)
-                        batch_results = {}  # Clear to free memory
-                    else:
-                        self.balances.update(batch_results)
-                    
-                    del futures
+                               self.LIMIT, (chunk_idx % self.n_cores) + 1)
+                        future = executor.submit(process_chunk_balances_v2, args)
+                        futures[future] = chunk
+                        chunk_idx += 1
+                
+                # Save remaining results
+                if not self.split_save and batch_results:
+                    self.balances.update(batch_results)
 
     def calculate_velocities_parallel(self):
         """
-        Calculate token velocities using parallel processing with LIFO matching.
+        Calculate token velocities using parallel processing with LIFO matching and rolling queue.
         
         Distributes addresses across multiple worker processes to calculate velocities
-        using LIFO (Last-In-First-Out) accounting. Can optionally save results 
-        incrementally if split_save is enabled.
+        using LIFO (Last-In-First-Out) accounting. Uses a rolling queue where new chunks 
+        are submitted as soon as a worker finishes, eliminating idle time from waiting 
+        for slow workers.
         
         Note: This operation modifies the accounts dictionary as it matches and
         consumes assets/liabilities. The original accounts are preserved in
@@ -458,39 +476,55 @@ class MicroVelocityAnalyzer:
         chunk_size = max(1, len(addresses) // self.n_chunks)
         chunks = [addresses[i:(i + chunk_size)] for i in range(0, len(addresses), chunk_size)]
         
+        total_chunks = len(chunks)
         batch_results = {}
-        processed_chunks = 0
         
         with ProcessPoolExecutor(max_workers=self.n_cores) as executor:
-            with tqdm(total=len(chunks), desc="Processing chunks") as pbar:
-                while processed_chunks < len(chunks):
-                    # Process batches to control memory usage
-                    current_batch = chunks[processed_chunks:processed_chunks + self.n_cores*self.batch_size]
-                    futures = []
+            with tqdm(total=total_chunks, desc="Processing chunks") as pbar:
+                # Submit initial batch of work (up to n_cores chunks)
+                futures = {}
+                chunk_idx = 0
+                
+                # Fill the worker pool with initial jobs
+                while chunk_idx < min(self.n_cores, total_chunks):
+                    chunk = chunks[chunk_idx]
+                    accounts_chunk = {address: self.accounts[address] for address in chunk}
+                    args = (chunk, accounts_chunk, self.min_block_number, 
+                           self.save_every_n, self.LIMIT, (chunk_idx % self.n_cores) + 1)
+                    future = executor.submit(process_chunk_velocities, args)
+                    futures[future] = chunk
+                    chunk_idx += 1
+                
+                # Process results and submit new work as workers complete
+                while futures:
+                    # Wait for at least one future to complete
+                    done, _ = as_completed(futures).__next__(), None
                     
-                    # Submit worker jobs for this batch
-                    for i, chunk in enumerate(current_batch):
+                    # Get result and clean up
+                    chunk_results = done.result()
+                    completed_chunk = futures.pop(done)
+                    batch_results.update(chunk_results)
+                    pbar.update(1)
+                    
+                    # Handle split_save if needed
+                    if self.split_save and len(batch_results) >= self.batch_size * len(completed_chunk):
+                        last_address = list(batch_results.keys())[-1]
+                        self._save_split_results(batch_results, 'velocities', last_address)
+                        batch_results = {}
+                    
+                    # Submit new work if chunks remain
+                    if chunk_idx < total_chunks:
+                        chunk = chunks[chunk_idx]
                         accounts_chunk = {address: self.accounts[address] for address in chunk}
                         args = (chunk, accounts_chunk, self.min_block_number, 
-                               self.save_every_n, self.LIMIT, i + 1)
-                        futures.append(executor.submit(process_chunk_velocities, args))
-                    
-                    # Collect results as they complete
-                    for future in as_completed(futures):
-                        chunk_results = future.result()
-                        batch_results.update(chunk_results)
-                        processed_chunks += 1
-                        pbar.update(1)
-                    
-                    # Handle results based on split_save setting
-                    if self.split_save:
-                        last_address = current_batch[-1][-1]
-                        self._save_split_results(batch_results, 'velocities', last_address)
-                        batch_results = {}  # Clear to free memory
-                    else:
-                        self.velocities.update(batch_results)
-                    
-                    del futures
+                               self.save_every_n, self.LIMIT, (chunk_idx % self.n_cores) + 1)
+                        future = executor.submit(process_chunk_velocities, args)
+                        futures[future] = chunk
+                        chunk_idx += 1
+                
+                # Save remaining results
+                if not self.split_save and batch_results:
+                    self.velocities.update(batch_results)
 
 
     def save_balances(self):
