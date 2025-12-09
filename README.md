@@ -62,7 +62,7 @@ micro-velocity-analyzer \
 
 ## Arguments
 
-### Required Arguments
+### Optional Arguments
 
 - `--allocated_file`: Path to the CSV file containing initial token allocation data (e.g., minting events, ICO distributions)
   - Default: `sampledata/sample_allocated.csv`
@@ -70,16 +70,14 @@ micro-velocity-analyzer \
 - `--transfers_file`: Path to the CSV file containing peer-to-peer transfer data
   - Default: `sampledata/sample_transfers.csv`
 
-### Optional Arguments
-
 - `--output_file`: Path to the output file where results will be saved in pickle format
   - Default: `sampledata/general_velocities.pickle`
-  - The saved file contains a tuple: `[backup_accounts, velocities, balances]`
+  - Creates two separate files: `{output_file}_balances.pickle` and `{output_file}_velocities.pickle`
 
-- `--save_every_n`: Block interval for sampling. Controls how often balances and velocities are recorded
+- `--save_every_n`: Block interval for sampling (currently not actively used in sparse representation)
   - Default: `1` (every block)
-  - Higher values reduce memory usage and file size at the cost of temporal resolution
-  - Example: `--save_every_n 100` samples every 100 blocks
+  - Note: Both balances and velocities are stored only at transaction blocks for maximum compression
+  - This parameter is maintained for backward compatibility and future use
 
 - `--n_cores`: Number of CPU cores to use for parallel processing
   - Default: `1` (sequential processing)
@@ -156,18 +154,17 @@ micro-velocity-analyzer \
 
 ## Output Format
 
-To save space, velocities and balances are sampled according to the `save_every_n` parameter. The saved pickle file contains a tuple with three elements:
+The results are saved as separate pickle files for balances and velocities:
 
-1. **backup_accounts**: Dictionary of account data with assets and liabilities before velocity calculation
-   - Structure: `{address: [{block: amount}, {block: amount}]}` for [assets, liabilities]
+1. **{output_file}_balances.pickle**: Dictionary mapping addresses to sparse balance series
+   - Structure: `{address: [(block_number, balance), (block_number, balance), ...]}`
+   - Balances are stored only at blocks where changes occur (sparse representation)
+   - Values are integers (Python arbitrary precision)
    
-2. **velocities**: Dictionary mapping addresses to velocity arrays
-   - Structure: `{address: numpy.array([velocity_at_interval_0, velocity_at_interval_1, ...])}` 
-   - Velocity represents token movement rate (amount/duration) using LIFO accounting
-   
-3. **balances**: Dictionary mapping addresses to balance arrays
-   - Structure: `{address: numpy.array([balance_at_interval_0, balance_at_interval_1, ...])}`
-   - Balance at each checkpoint interval
+2. **{output_file}_velocities.pickle**: Dictionary mapping addresses to sparse velocity series
+   - Structure: `{address: [(block_number, velocity), (block_number, velocity), ...]}`
+   - Velocities are stored only at blocks where changes occur (sparse representation)
+   - Values are floats representing token movement rate (amount/blocks)
 
 ## Example CSV Files
 
