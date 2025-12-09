@@ -14,9 +14,9 @@ import os
 import pickle
 import numpy as np
 import csv
+import random
 from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor, as_completed
-
 
 
 def process_chunk_balances_v2(args):
@@ -25,17 +25,14 @@ def process_chunk_balances_v2(args):
     
     This function processes a subset of addresses to compute their balance only at
     transaction blocks where balance changes occur. This sparse storage approach
-    matches the velocity calculation and makes save_every_n irrelevant for balances.
+    maximally compresses storage without losing information.
     
     Balances only change when transactions occur (assets received or liabilities sent),
-    so storing only at transaction blocks provides maximum compression without losing
-    information.
+    so storing only at transaction blocks is optimal.
     
     Args:
         args: Tuple containing (addresses, accounts_chunk, min_block_number,
               max_block_number, save_every_n, LIMIT, pos, chunk_id)
-              Note: save_every_n and LIMIT are not used for balance calculation
-    
 
     Returns:
         dict: Maps address -> list of (block, balance) tuples at transaction blocks only
@@ -72,14 +69,15 @@ def process_chunk_balances_v2(args):
 
 def process_chunk_velocities(args):
     """
-    Calculate token velocities for a chunk of addresses using LIFO matching (parallel worker function).
+    Calculate token velocities for a chunk of addresses using specified matching strategy (parallel worker function).
     
-    Token velocity measures how fast tokens move through addresses. This function uses
-    LIFO (Last-In-First-Out) accounting to match outgoing transactions with incoming ones,
-    calculating velocity as: amount / duration (where duration is blocks between receipt and send).
+    Token velocity measures how fast tokens move through addresses. This function supports multiple
+    accounting methods to match outgoing transactions with incoming ones:
+    - LIFO (Last-In-First-Out): Most recently received tokens spent first
+    - FIFO (First-In-First-Out): Oldest received tokens spent first
+    - RANDOM: Randomly selected incoming transactions matched with outgoings
     
-    The LIFO approach assumes that the most recently received tokens are spent first,
-    which makes economic sense by effectively separating savings from spending.
+    Velocity is calculated as: amount / duration (where duration is blocks between receipt and send).
     
     This version stores velocities ONLY at transaction blocks (incoming/outgoing), making
     save_every_n irrelevant for velocity calculation. Velocity changes only when transactions
@@ -87,16 +85,16 @@ def process_chunk_velocities(args):
     
     Args:
         args: Tuple containing (addresses, accounts_chunk, min_block_number, 
-              save_every_n, LIMIT, pos, chunk_id)
-              Note: save_every_n is not used for velocity calculation
+              save_every_n, LIMIT, pos, chunk_id, matching_strategy)
+              matching_strategy: 'lifo', 'fifo', or 'random'
     
     Returns:
         dict: Maps address -> list of (block, velocity) tuples at transaction blocks only
     """
-    addresses, accounts_chunk, min_block_number, save_every_n, LIMIT, pos, chunk_id = args
+    addresses, accounts_chunk, min_block_number, save_every_n, LIMIT, pos, chunk_id, matching_strategy = args
     results = {}
     
-    for address in tqdm(addresses, position=pos, leave=False, desc=f"Core {pos} [Chunk {chunk_id}]"):
+    for address in tqdm(addresses, position=pos, leave=False, desc=f"Core {pos} [Chunk {chunk_id}] ({matching_strategy.upper()})"):
         # Only calculate velocity if address has both incoming and outgoing transactions
         if len(accounts_chunk[address][0]) > 0 and len(accounts_chunk[address][1]) > 0:
             # Get sorted lists of liability (outgoing) block numbers
@@ -105,48 +103,63 @@ def process_chunk_velocities(args):
             # Track velocity contributions at each transaction block
             # We'll accumulate velocity changes and then compute running totals
             velocity_changes = {}  # block -> delta_velocity
-            
-            # Collect all transaction blocks where velocity might change
-            all_tx_blocks = set(accounts_chunk[address][0].keys()) | set(accounts_chunk[address][1].keys())
 
             # Process each outgoing transaction (liability)
             for outgoing_block in sorted_out_blocks:
                 # Refresh list of available incoming transactions (assets)
                 sorted_in_blocks = sorted(list(accounts_chunk[address][0].keys()))
+                
+                # Filter to only transactions before outgoing block
+                valid_in_blocks = [b for b in sorted_in_blocks if b < outgoing_block]
+                if not valid_in_blocks:
+                    continue
 
-                # Find all incoming transactions that occurred before this outgoing transaction (LIFO order)
-                # Iterate from most recent to oldest
-                for incoming_block in reversed(sorted_in_blocks):
-                    if incoming_block >= outgoing_block:
-                        continue  # Skip future incoming transactions
+                outgoing_amount = int(accounts_chunk[address][1][outgoing_block])
 
+                # Select matching strategy and iterate through incoming transactions
+                if matching_strategy.lower() == 'lifo':
+                    # LIFO: iterate from most recent to oldest
+                    incoming_block_order = reversed(valid_in_blocks)
+                elif matching_strategy.lower() == 'fifo':
+                    # FIFO: iterate from oldest to newest
+                    incoming_block_order = iter(valid_in_blocks)
+                elif matching_strategy.lower() == 'random':
+                    # RANDOM: shuffle the order
+                    shuffled_blocks = valid_in_blocks.copy()
+                    random.shuffle(shuffled_blocks)
+                    incoming_block_order = iter(shuffled_blocks)
+                else:
+                    raise ValueError(f"Unknown matching strategy: {matching_strategy}")
+
+                # Find matching incoming transactions
+                for incoming_block in incoming_block_order:
                     # Keep as integers for exact arithmetic (Python arbitrary precision)
                     incoming_amount = int(accounts_chunk[address][0][incoming_block])
-                    outgoing_amount = int(accounts_chunk[address][1][outgoing_block])
+                    remaining_outgoing = int(accounts_chunk[address][1][outgoing_block])
 
-                    # Case 1: Incoming amount covers (or exceeds) the outgoing amount
-                    if (incoming_amount - outgoing_amount) >= 0:
+                    # Case 1: Incoming amount covers (or exceeds) the remaining outgoing amount
+                    if (incoming_amount - remaining_outgoing) >= 0:
                         if incoming_block == outgoing_block:
                             # Through transaction - just reduce the net incoming amount
-                            accounts_chunk[address][0][incoming_block] -= outgoing_amount
+                            accounts_chunk[address][0][incoming_block] -= remaining_outgoing
                             accounts_chunk[address][1].pop(outgoing_block)
                             break
                         else:
                             # Calculate velocity: amount / time duration
                             duration = outgoing_block - incoming_block
                             if duration > 0:
-                                velocity_contrib = float(outgoing_amount) / float(duration)
+                                velocity_contrib = float(remaining_outgoing) / float(duration)
                                 # Add velocity at incoming block (when tokens start moving)
                                 velocity_changes[incoming_block] = velocity_changes.get(incoming_block, 0.0) + velocity_contrib
                                 # Subtract velocity at outgoing block (when tokens stop moving)
                                 velocity_changes[outgoing_block] = velocity_changes.get(outgoing_block, 0.0) - velocity_contrib
 
                             # Update remaining amounts
-                            accounts_chunk[address][0][incoming_block] -= outgoing_amount
+                            accounts_chunk[address][0][incoming_block] -= remaining_outgoing
                             accounts_chunk[address][1].pop(outgoing_block)
                             break
 
-                    # Case 2: Incoming amount is less than outgoing - partial match
+                    # Case 2: Incoming amount is less than remaining outgoing - partial match
                     else:
                         if incoming_block == outgoing_block:
                             # Through transaction - reduce liability and consume entire asset
@@ -211,7 +224,7 @@ class MicroVelocityAnalyzer:
     """
     
     def __init__(self, allocated_file, transfers_file, output_file='temp/general_velocities.pickle', 
-                 save_every_n=1, n_cores=1, n_chunks=1, split_save=False, batch_size=1):
+                 save_every_n=1, n_cores=1, n_chunks=1, split_save=False, batch_size=1, matching_strategy='lifo'):
         self.allocated_file = allocated_file
         self.transfers_file = transfers_file
         self.output_file = output_file
@@ -220,6 +233,12 @@ class MicroVelocityAnalyzer:
         self.n_chunks = n_chunks
         self.split_save = split_save
         self.batch_size = batch_size
+        self.matching_strategy = matching_strategy.lower()  # 'lifo', 'fifo', or 'random'
+        
+        # Validate matching strategy
+        valid_strategies = ['lifo', 'fifo', 'random']
+        if self.matching_strategy not in valid_strategies:
+            raise ValueError(f"Invalid matching_strategy '{matching_strategy}'. Must be one of: {', '.join(valid_strategies)}")
         
         # Main data structures
         self.accounts = {}  # {address: [{block: amount}, {block: amount}]} for assets/liabilities
@@ -454,12 +473,12 @@ class MicroVelocityAnalyzer:
 
     def calculate_velocities_parallel(self):
         """
-        Calculate token velocities using parallel processing with LIFO matching and rolling queue.
+        Calculate token velocities using parallel processing with configurable matching strategy and rolling queue.
         
         Distributes addresses across multiple worker processes to calculate velocities
-        using LIFO (Last-In-First-Out) accounting. Uses a rolling queue where new chunks 
-        are submitted as soon as a worker finishes, eliminating idle time from waiting 
-        for slow workers.
+        using the specified matching strategy (LIFO, FIFO, or RANDOM). Uses a rolling queue 
+        where new chunks are submitted as soon as a worker finishes, eliminating idle time 
+        from waiting for slow workers.
         
         Note: This operation modifies the accounts dictionary as it matches and
         consumes assets/liabilities. The original accounts are preserved in
@@ -491,7 +510,7 @@ class MicroVelocityAnalyzer:
                     # Position starts from 1 (position 0 is main progress bar)
                     core_position = (chunk_idx % self.n_cores) + 1
                     args = (chunk, accounts_chunk, self.min_block_number, 
-                           self.save_every_n, self.LIMIT, core_position, chunk_idx)
+                           self.save_every_n, self.LIMIT, core_position, chunk_idx, self.matching_strategy)
                     future = executor.submit(process_chunk_velocities, args)
                     futures[future] = (chunk, core_position)
                     chunk_idx += 1
@@ -518,7 +537,7 @@ class MicroVelocityAnalyzer:
                         chunk = chunks[chunk_idx]
                         accounts_chunk = {address: self.accounts[address] for address in chunk}
                         args = (chunk, accounts_chunk, self.min_block_number, 
-                               self.save_every_n, self.LIMIT, core_position, chunk_idx)
+                               self.save_every_n, self.LIMIT, core_position, chunk_idx, self.matching_strategy)
                         future = executor.submit(process_chunk_velocities, args)
                         futures[future] = (chunk, core_position)
                         chunk_idx += 1
@@ -564,7 +583,7 @@ class MicroVelocityAnalyzer:
         4. Backup accounts (velocity calculation modifies them)
         5. Calculate balances at checkpoints (unless velocities_only)
         6. Save balances and clear from memory (unless velocities_only)
-        7. Calculate velocities using LIFO matching (unless balances_only)
+        7. Calculate velocities using specified matching strategy (unless balances_only)
         8. Save velocities to file(s) (unless balances_only)
         
         Args:
@@ -588,6 +607,7 @@ class MicroVelocityAnalyzer:
         self.backup_accounts = self.accounts.copy()
         
         print(f"Number of blocks considered: {self.LIMIT}")
+        print(f"Velocity matching strategy: {self.matching_strategy.upper()}")
         
         if not velocities_only:
             print("Calculating balances...")
@@ -629,6 +649,12 @@ def main():
                        help='Split the save into different files')
     parser.add_argument('--batch_size', type=int, default=1, 
                        help='Number of chunks to process in a single batch')
+    parser.add_argument('--matching_strategy', type=str, default='lifo', 
+                       choices=['lifo', 'fifo', 'random'],
+                       help='Strategy for matching incoming and outgoing transactions (default: lifo)\n'
+                            '  lifo: Last-In-First-Out - most recently received tokens spent first\n'
+                            '  fifo: First-In-First-Out - oldest received tokens spent first\n'
+                            '  random: Random - randomly selected incoming transactions matched')
     parser.add_argument('--balances_only', action='store_true', default=False,
                        help='Calculate and save only balances (skip velocities)')
     parser.add_argument('--velocities_only', action='store_true', default=False,
@@ -647,7 +673,8 @@ def main():
         n_cores=args.n_cores,
         n_chunks=args.n_chunks,
         split_save=args.split_save,
-        batch_size=args.batch_size
+        batch_size=args.batch_size,
+        matching_strategy=args.matching_strategy
     )
     
     # Run analysis with optional flags

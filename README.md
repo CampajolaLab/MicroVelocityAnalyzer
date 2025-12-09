@@ -102,9 +102,17 @@ micro-velocity-analyzer \
 - `--split_save`: Enable split save mode for very large datasets
   - Default: `False` (disabled)
   - When enabled, saves intermediate results to separate files instead of keeping everything in memory
-  - Output files are named: `{output_file}_balances_{last_address}.pickle` and `{output_file}_velocities_{last_address}.pickle`
   - Use this flag when processing millions of addresses to avoid memory overflow
   - Example: `--split_save`
+
+- `--matching_strategy`: Strategy for matching incoming and outgoing transactions when calculating velocity
+  - Default: `lifo` (Last-In-First-Out)
+  - Options:
+    - `lifo`: Last-In-First-Out - assumes most recently received tokens are spent first. Most economically realistic for modeling savings vs. spending.
+    - `fifo`: First-In-First-Out - assumes oldest received tokens are spent first. Useful for comparison or different economic models.
+    - `random`: Random - randomly selects which incoming transactions are matched with outgoing ones. Useful for sensitivity analysis and robustness testing.
+  - Example: `--matching_strategy fifo` or `--matching_strategy random`
+  - Note: Different strategies will produce different velocity results; choose based on your economic assumptions
 
 ## Performance Tuning Guide
 
@@ -179,6 +187,53 @@ from_address,to_address,amount,block_number
 address1,address2,50,4
 address2,address3,100,5
 address1,address3,75,6
+```
+
+## Velocity Matching Strategies
+
+The package supports three different strategies for matching incoming and outgoing transactions when calculating velocity. Each strategy represents a different economic assumption about which tokens are spent first:
+
+### LIFO (Last-In-First-Out) - Default
+```sh
+micro-velocity-analyzer \
+  --allocated_file data.csv \
+  --transfers_file transfers.csv \
+  --matching_strategy lifo
+```
+**Assumptions**: Most recently received tokens are spent first (like a stack). This is the default and most economically realistic for many scenarios, effectively separating "savings" (older tokens held) from "spending" (recently acquired tokens).
+
+### FIFO (First-In-First-Out)
+```sh
+micro-velocity-analyzer \
+  --allocated_file data.csv \
+  --transfers_file transfers.csv \
+  --matching_strategy fifo
+```
+**Assumptions**: Oldest received tokens are spent first (queue behavior). Useful for comparison analyses or when specific economic models assume chronological spending patterns.
+
+### RANDOM
+```sh
+micro-velocity-analyzer \
+  --allocated_file data.csv \
+  --transfers_file transfers.csv \
+  --matching_strategy random
+```
+**Assumptions**: Incoming transactions are matched randomly with outgoing ones. Useful for:
+- Sensitivity analysis to test robustness of results
+- Baseline comparison to see impact of matching strategy
+- Simulating scenarios with no information about token acquisition order
+
+**Example**: Comparing all three strategies on the same dataset:
+```sh
+for strategy in lifo fifo random; do
+  micro-velocity-analyzer \
+    --allocated_file data.csv \
+    --transfers_file transfers.csv \
+    --output_file results_${strategy}.pickle \
+    --matching_strategy $strategy \
+    --n_cores 8 \
+    --n_chunks 64
+done
 ```
 
 ## Contributions
