@@ -62,7 +62,7 @@ micro-velocity-analyzer \
 
 ## Arguments
 
-### Optional Arguments
+### Required Arguments
 
 - `--allocated_file`: Path to the CSV file containing initial token allocation data (e.g., minting events, ICO distributions)
   - Default: `sampledata/sample_allocated.csv`
@@ -70,14 +70,16 @@ micro-velocity-analyzer \
 - `--transfers_file`: Path to the CSV file containing peer-to-peer transfer data
   - Default: `sampledata/sample_transfers.csv`
 
+### Optional Arguments
+
 - `--output_file`: Path to the output file where results will be saved in pickle format
   - Default: `sampledata/general_velocities.pickle`
-  - Creates two separate files: `{output_file}_balances.pickle` and `{output_file}_velocities.pickle`
+  - The saved file contains a tuple: `[backup_accounts, velocities, balances]`
 
-- `--save_every_n`: Block interval for sampling (currently not actively used in sparse representation)
+- `--save_every_n`: Block interval for sampling. Controls how often balances and velocities are recorded
   - Default: `1` (every block)
-  - Note: Both balances and velocities are stored only at transaction blocks for maximum compression
-  - This parameter is maintained for backward compatibility and future use
+  - Higher values reduce memory usage and file size at the cost of temporal resolution
+  - Example: `--save_every_n 100` samples every 100 blocks
 
 - `--n_cores`: Number of CPU cores to use for parallel processing
   - Default: `1` (sequential processing)
@@ -154,17 +156,18 @@ micro-velocity-analyzer \
 
 ## Output Format
 
-The results are saved as separate pickle files for balances and velocities:
+To save space, velocities and balances are sampled according to the `save_every_n` parameter. The saved pickle file contains a tuple with three elements:
 
-1. **{output_file}_balances.pickle**: Dictionary mapping addresses to sparse balance series
-   - Structure: `{address: [(block_number, balance), (block_number, balance), ...]}`
-   - Balances are stored only at blocks where changes occur (sparse representation)
-   - Values are integers (Python arbitrary precision)
+1. **backup_accounts**: Dictionary of account data with assets and liabilities before velocity calculation
+   - Structure: `{address: [{block: amount}, {block: amount}]}` for [assets, liabilities]
    
-2. **{output_file}_velocities.pickle**: Dictionary mapping addresses to sparse velocity series
-   - Structure: `{address: [(block_number, velocity), (block_number, velocity), ...]}`
-   - Velocities are stored only at blocks where changes occur (sparse representation)
-   - Values are floats representing token movement rate (amount/blocks)
+2. **velocities**: Dictionary mapping addresses to velocity arrays
+   - Structure: `{address: numpy.array([velocity_at_interval_0, velocity_at_interval_1, ...])}` 
+   - Velocity represents token movement rate (amount/duration) using LIFO accounting
+   
+3. **balances**: Dictionary mapping addresses to balance arrays
+   - Structure: `{address: numpy.array([balance_at_interval_0, balance_at_interval_1, ...])}`
+   - Balance at each checkpoint interval
 
 ## Example CSV Files
 
@@ -231,6 +234,157 @@ for strategy in lifo fifo random; do
     --n_cores 8 \
     --n_chunks 64
 done
+```
+
+## Post-Processing Analysis
+
+After computing velocities and balances, use the analysis module to extract statistics and cross-sectional snapshots. The analysis script provides three main operations:
+
+### Running the Analysis Script
+
+```sh
+python -m micro_velocity_analyzer.analysis \
+  --balances path/to/balances.pickle \
+  --velocities path/to/velocities.pickle \
+  <command> [command-specific-args]
+```
+
+### 1. Cross-Section Analysis
+
+Extract velocity/balance statistics at a specific block (snapshot):
+
+```sh
+python -m micro_velocity_analyzer.analysis \
+  --balances results_balances.pickle \
+  --velocities results_velocities.pickle \
+  cross-section --block 1000000 --min-denominator 1
+```
+
+**Output**: Summary statistics including:
+- Count of non-zero addresses
+- Mean, median, std, min, max velocity/balance ratios
+- Percentile values (25th, 75th, 90th, 99th)
+
+**Arguments**:
+- `--block`: Block number for the snapshot (required)
+- `--min-denominator`: Minimum balance threshold to include in ratio calculations (default: 1)
+
+### 2. Longitudinal Analysis
+
+Extract sparse velocity/balance ratio time series for a single address:
+
+```sh
+python -m micro_velocity_analyzer.analysis \
+  --balances results_balances.pickle \
+  --velocities results_velocities.pickle \
+  longitudinal --address 0xabc123def456 --min-denominator 1
+```
+
+**Output**: One line per data point: `block_number ratio_value`
+
+**Use Cases**:
+- Track an address's token activity over time
+- Identify periods of high/low velocity
+- Analyze individual account behavior patterns
+
+**Arguments**:
+- `--address`: Ethereum address to analyze (required, lowercase)
+- `--min-denominator`: Minimum balance to include in ratio (default: 1)
+
+### 3. Batch Cross-Section Analysis
+
+Extract cross-sectional snapshots at multiple blocks in parallel, with results saved to separate files:
+
+```sh
+python -m micro_velocity_analyzer.analysis \
+  --balances results_balances.pickle \
+  --velocities results_velocities.pickle \
+  batch-cross-section \
+  --blocks-file blocks.pickle \
+  --output-folder xsects/ \
+  --n-workers 4 \
+  --parallel-mode shared \
+  --min-denominator 1
+```
+
+**Output**: Three pickle files per block in `output-folder/`:
+- `xsect_balance_block_{block}.pickle`: Balance values at block
+- `xsect_velocity_block_{block}.pickle`: Velocity values at block
+- `xsect_ratio_block_{block}.pickle`: Velocity/balance ratios at block
+
+**Preparation** (create blocks list):
+```python
+# Create a pickle file with list of block numbers to process
+import pickle
+blocks = [1000000, 2000000, 3000000]  # Your blocks of interest
+with open('blocks.pickle', 'wb') as f:
+    pickle.dump(blocks, f)
+```
+
+**Arguments**:
+- `--blocks-file`: Path to pickle file containing list of block numbers (required)
+- `--output-folder`: Folder where results will be saved (required)
+- `--min-denominator`: Minimum balance threshold (default: 1)
+- `--n-workers`: Number of parallel workers (default: 1)
+  - `1`: Sequential processing (minimal memory)
+  - `4-8`: Recommended for most datasets
+  - `16+`: For very large datasets with many CPU cores
+- `--parallel-mode`: Processing strategy (default: `shared`)
+  - `shared`: Shared memory mode - faster, requires Python 3.8+, best for medium datasets
+  - `batched`: Batch processing - slower but compatible with all Python versions, better for very large datasets
+- `--blocks-per-batch`: Blocks per batch in batched mode (default: 10)
+  - Higher values reduce overhead but increase memory per batch
+  - Tune based on available RAM
+
+**Example: Process 100 blocks with 4 workers**:
+```sh
+python -m micro_velocity_analyzer.analysis \
+  --balances results_balances.pickle \
+  --velocities results_velocities.pickle \
+  batch-cross-section \
+  --blocks-file blocks.pickle \
+  --output-folder results/cross_sections/ \
+  --n-workers 4 \
+  --parallel-mode shared \
+  --blocks-per-batch 10
+```
+
+**Example: Process very large dataset (>10M addresses) sequentially**:
+```sh
+python -m micro_velocity_analyzer.analysis \
+  --balances results_balances_dir/ \
+  --velocities results_velocities_dir/ \
+  batch-cross-section \
+  --blocks-file blocks.pickle \
+  --output-folder results/cross_sections/ \
+  --n-workers 1
+```
+
+### Loading Analysis Results
+
+After batch cross-section analysis, load results in Python:
+
+```python
+import pickle
+import os
+
+results_folder = "results/cross_sections/"
+block = 1000000
+
+# Load cross-section data at a block
+with open(os.path.join(results_folder, f"xsect_balance_block_{block}.pickle"), 'rb') as f:
+    balances = pickle.load(f)  # Dict[address, balance]
+
+with open(os.path.join(results_folder, f"xsect_velocity_block_{block}.pickle"), 'rb') as f:
+    velocities = pickle.load(f)  # Dict[address, velocity]
+
+with open(os.path.join(results_folder, f"xsect_ratio_block_{block}.pickle"), 'rb') as f:
+    ratios = pickle.load(f)  # Dict[address, velocity/balance ratio]
+
+# Example: Find top 10 addresses by velocity/balance ratio
+top_addresses = sorted(ratios.items(), key=lambda x: x[1], reverse=True)[:10]
+for address, ratio in top_addresses:
+    print(f"{address}: {ratio:.4f}")
 ```
 
 ## Contributions
