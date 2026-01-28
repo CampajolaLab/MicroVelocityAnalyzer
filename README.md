@@ -1,7 +1,7 @@
 # MicroVelocityAnalyzer
 
 MicroVelocityAnalyzer is a Python package for analyzing the velocity and balances of accounts based on transfer and allocation data.
-This package is based on the initial inspiration of Carlo Campajola, a inspiration that has been explored in many papers about different cryptocurrencies. This package is based on the work made on Ethereum MicroVelocity in "The Microvelocity of Money in Ethereum, EPJ Data Science 14 (11), 2025" [available at EPJ Data Science]{https://link.springer.com/article/10.1140/epjds/s13688-024-00518-6}, and is developed and mantained by Francesco Maria De Collibus and Carlo Campajola
+This package is based on the initial inspiration of Carlo Campajola, a inspiration that has been explored in many papers about different cryptocurrencies. This package is based on the work made on Ethereum MicroVelocity in "The Microvelocity of Money in Ethereum, EPJ Data Science 14 (11), 2025" [available at EPJ Data Science](https://link.springer.com/article/10.1140/epjds/s13688-024-00518-6), and is developed and mantained by Francesco Maria De Collibus and Carlo Campajola
 
 ## Features
 
