@@ -26,7 +26,7 @@ After installing the package, you can run the script from the command line using
 ### Basic Usage
 
 ```sh
-micro-velocity-analyzer --allocated_file path/to/allocated.csv --transfers_file path/to/transfers.csv --output_file path/to/output/general_velocities.pickle --save_every_n 10
+micro-velocity-analyzer --allocated_file path/to/allocated.csv --transfers_file path/to/transfers.csv --output_file path/to/output/general_velocities.pickle
 ```
 
 ### Advanced Usage with Parallel Processing
@@ -38,7 +38,6 @@ micro-velocity-analyzer \
   --allocated_file path/to/allocated.csv \
   --transfers_file path/to/transfers.csv \
   --output_file path/to/output/general_velocities.pickle \
-  --save_every_n 100 \
   --n_cores 8 \
   --n_chunks 64 \
   --batch_size 2
@@ -53,7 +52,6 @@ micro-velocity-analyzer \
   --allocated_file path/to/allocated.csv \
   --transfers_file path/to/transfers.csv \
   --output_file path/to/output/general_velocities.pickle \
-  --save_every_n 100 \
   --n_cores 16 \
   --n_chunks 128 \
   --batch_size 4 \
@@ -75,11 +73,6 @@ micro-velocity-analyzer \
 - `--output_file`: Path to the output file where results will be saved in pickle format
   - Default: `sampledata/general_velocities.pickle`
   - The saved file contains a tuple: `[backup_accounts, velocities, balances]`
-
-- `--save_every_n`: Block interval for sampling. Controls how often balances and velocities are recorded
-  - Default: `1` (every block)
-  - Higher values reduce memory usage and file size at the cost of temporal resolution
-  - Example: `--save_every_n 100` samples every 100 blocks
 
 - `--n_cores`: Number of CPU cores to use for parallel processing
   - Default: `1` (sequential processing)
@@ -114,11 +107,21 @@ micro-velocity-analyzer \
   - Example: `--matching_strategy fifo` or `--matching_strategy random`
   - Note: Different strategies will produce different velocity results; choose based on your economic assumptions
 
+- `--balances_only`: Calculate and save only balances (skip velocity calculation)
+  - Default: `False` (both balances and velocities calculated)
+  - Use this flag to speed up processing if you only need balance data
+  - Example: `--balances_only`
+
+- `--velocities_only`: Calculate and save only velocities (skip balance calculation)
+  - Default: `False` (both balances and velocities calculated)
+  - Use this flag to speed up processing if you only need velocity data
+  - Example: `--velocities_only`
+
 ## Performance Tuning Guide
 
 ### Small Datasets (< 100K addresses)
 ```sh
-micro-velocity-analyzer --allocated_file data.csv --transfers_file transfers.csv --save_every_n 1
+micro-velocity-analyzer --allocated_file data.csv --transfers_file transfers.csv
 ```
 
 ### Medium Datasets (100K - 1M addresses)
@@ -126,7 +129,6 @@ micro-velocity-analyzer --allocated_file data.csv --transfers_file transfers.csv
 micro-velocity-analyzer \
   --allocated_file data.csv \
   --transfers_file transfers.csv \
-  --save_every_n 10 \
   --n_cores 4 \
   --n_chunks 32
 ```
@@ -136,7 +138,6 @@ micro-velocity-analyzer \
 micro-velocity-analyzer \
   --allocated_file data.csv \
   --transfers_file transfers.csv \
-  --save_every_n 100 \
   --n_cores 16 \
   --n_chunks 128 \
   --batch_size 4
@@ -147,7 +148,6 @@ micro-velocity-analyzer \
 micro-velocity-analyzer \
   --allocated_file data.csv \
   --transfers_file transfers.csv \
-  --save_every_n 1000 \
   --n_cores 32 \
   --n_chunks 256 \
   --batch_size 8 \
@@ -156,7 +156,7 @@ micro-velocity-analyzer \
 
 ## Output Format
 
-To save space, velocities and balances are sampled according to the `save_every_n` parameter. The saved pickle file contains a tuple with three elements:
+The saved pickle file contains a tuple with three elements:
 
 1. **backup_accounts**: Dictionary of account data with assets and liabilities before velocity calculation
    - Structure: `{address: [{block: amount}, {block: amount}]}` for [assets, liabilities]
@@ -187,53 +187,6 @@ from_address,to_address,amount,block_number
 address1,address2,50,4
 address2,address3,100,5
 address1,address3,75,6
-```
-
-## Velocity Matching Strategies
-
-The package supports three different strategies for matching incoming and outgoing transactions when calculating velocity. Each strategy represents a different economic assumption about which tokens are spent first:
-
-### LIFO (Last-In-First-Out) - Default
-```sh
-micro-velocity-analyzer \
-  --allocated_file data.csv \
-  --transfers_file transfers.csv \
-  --matching_strategy lifo
-```
-**Assumptions**: Most recently received tokens are spent first (like a stack). This is the default and most economically realistic for many scenarios, effectively separating "savings" (older tokens held) from "spending" (recently acquired tokens).
-
-### FIFO (First-In-First-Out)
-```sh
-micro-velocity-analyzer \
-  --allocated_file data.csv \
-  --transfers_file transfers.csv \
-  --matching_strategy fifo
-```
-**Assumptions**: Oldest received tokens are spent first (queue behavior). Useful for comparison analyses or when specific economic models assume chronological spending patterns.
-
-### RANDOM
-```sh
-micro-velocity-analyzer \
-  --allocated_file data.csv \
-  --transfers_file transfers.csv \
-  --matching_strategy random
-```
-**Assumptions**: Incoming transactions are matched randomly with outgoing ones. Useful for:
-- Sensitivity analysis to test robustness of results
-- Baseline comparison to see impact of matching strategy
-- Simulating scenarios with no information about token acquisition order
-
-**Example**: Comparing all three strategies on the same dataset:
-```sh
-for strategy in lifo fifo random; do
-  micro-velocity-analyzer \
-    --allocated_file data.csv \
-    --transfers_file transfers.csv \
-    --output_file results_${strategy}.pickle \
-    --matching_strategy $strategy \
-    --n_cores 8 \
-    --n_chunks 64
-done
 ```
 
 ## Post-Processing Analysis

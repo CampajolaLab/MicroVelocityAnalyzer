@@ -32,12 +32,12 @@ def process_chunk_balances_v2(args):
     
     Args:
         args: Tuple containing (addresses, accounts_chunk, min_block_number,
-              max_block_number, save_every_n, LIMIT, pos, chunk_id)
+              max_block_number, pos, chunk_id)
 
     Returns:
         dict: Maps address -> list of (block, balance) tuples at transaction blocks only
     """
-    addresses, accounts_chunk, min_block_number, max_block_number, save_every_n, LIMIT, pos, chunk_id = args
+    addresses, accounts_chunk, min_block_number, max_block_number, pos, chunk_id = args
 
     results = {}
 
@@ -85,13 +85,13 @@ def process_chunk_velocities(args):
     
     Args:
         args: Tuple containing (addresses, accounts_chunk, min_block_number, 
-              save_every_n, LIMIT, pos, chunk_id, matching_strategy)
+              pos, chunk_id, matching_strategy)
               matching_strategy: 'lifo', 'fifo', or 'random'
     
     Returns:
         dict: Maps address -> list of (block, velocity) tuples at transaction blocks only
     """
-    addresses, accounts_chunk, min_block_number, save_every_n, LIMIT, pos, chunk_id, matching_strategy = args
+    addresses, accounts_chunk, min_block_number, pos, chunk_id, matching_strategy = args
     results = {}
     
     for address in tqdm(addresses, position=pos, leave=False, desc=f"Core {pos} [Chunk {chunk_id}] ({matching_strategy.upper()})"):
@@ -216,7 +216,6 @@ class MicroVelocityAnalyzer:
         allocated_file (str): Path to CSV file with initial token allocations
         transfers_file (str): Path to CSV file with token transfers
         output_file (str): Path where results will be saved (pickle format)
-        save_every_n (int): Block interval for saving checkpoints (e.g., 1 = every block)
         n_cores (int): Number of CPU cores for parallel processing
         n_chunks (int): Number of chunks to split addresses into
         split_save (bool): If True, save intermediate results to separate files
@@ -224,11 +223,10 @@ class MicroVelocityAnalyzer:
     """
     
     def __init__(self, allocated_file, transfers_file, output_file='temp/general_velocities.pickle', 
-                 save_every_n=1, n_cores=1, n_chunks=1, split_save=False, batch_size=1, matching_strategy='lifo'):
+                 n_cores=1, n_chunks=1, split_save=False, batch_size=1, matching_strategy='lifo'):
         self.allocated_file = allocated_file
         self.transfers_file = transfers_file
         self.output_file = output_file
-        self.save_every_n = save_every_n
         self.n_cores = n_cores
         self.n_chunks = n_chunks
         self.split_save = split_save
@@ -251,7 +249,6 @@ class MicroVelocityAnalyzer:
         # Results
         self.velocities = {}  # {address: numpy array of velocities}
         self.balances = {}  # {address: numpy array of balances}
-        self.LIMIT = 0  # Number of time intervals (checkpoints)
         
         self._create_output_folder()
 
@@ -433,8 +430,7 @@ class MicroVelocityAnalyzer:
                     # Position starts from 1 (position 0 is main progress bar)
                     core_position = (chunk_idx % self.n_cores) + 1
                     args = (chunk, accounts_chunk, self.min_block_number, 
-                           self.max_block_number, self.save_every_n, 
-                           self.LIMIT, core_position, chunk_idx)
+                           self.max_block_number, core_position, chunk_idx)
                     future = executor.submit(process_chunk_balances_v2, args)
                     futures[future] = (chunk, core_position)
                     chunk_idx += 1
@@ -461,8 +457,7 @@ class MicroVelocityAnalyzer:
                         chunk = chunks[chunk_idx]
                         accounts_chunk = {address: self.accounts[address] for address in chunk}
                         args = (chunk, accounts_chunk, self.min_block_number, 
-                               self.max_block_number, self.save_every_n, 
-                               self.LIMIT, core_position, chunk_idx)
+                               self.max_block_number, core_position, chunk_idx)
                         future = executor.submit(process_chunk_balances_v2, args)
                         futures[future] = (chunk, core_position)
                         chunk_idx += 1
@@ -510,7 +505,7 @@ class MicroVelocityAnalyzer:
                     # Position starts from 1 (position 0 is main progress bar)
                     core_position = (chunk_idx % self.n_cores) + 1
                     args = (chunk, accounts_chunk, self.min_block_number, 
-                           self.save_every_n, self.LIMIT, core_position, chunk_idx, self.matching_strategy)
+                           core_position, chunk_idx, self.matching_strategy)
                     future = executor.submit(process_chunk_velocities, args)
                     futures[future] = (chunk, core_position)
                     chunk_idx += 1
@@ -537,7 +532,7 @@ class MicroVelocityAnalyzer:
                         chunk = chunks[chunk_idx]
                         accounts_chunk = {address: self.accounts[address] for address in chunk}
                         args = (chunk, accounts_chunk, self.min_block_number, 
-                               self.save_every_n, self.LIMIT, core_position, chunk_idx, self.matching_strategy)
+                               core_position, chunk_idx, self.matching_strategy)
                         future = executor.submit(process_chunk_velocities, args)
                         futures[future] = (chunk, core_position)
                         chunk_idx += 1
@@ -596,17 +591,13 @@ class MicroVelocityAnalyzer:
         print("Loading transfer data...", self.transfers_file)
         self.load_transfer_data()
         
-        print("Computing interval of", self.save_every_n, "blocks")
         print(f"Min block number: {self.min_block_number}")
         print(f"Max block number: {self.max_block_number}")
-        
-        # Calculate number of checkpoints in the analysis
-        self.LIMIT = (self.max_block_number - self.min_block_number) // self.save_every_n + 1
         
         # Create backup before velocity calculation (which modifies accounts)
         self.backup_accounts = self.accounts.copy()
         
-        print(f"Number of blocks considered: {self.LIMIT}")
+        print(f"Total block range: {self.max_block_number - self.min_block_number} blocks")
         print(f"Velocity matching strategy: {self.matching_strategy.upper()}")
         
         if not velocities_only:
@@ -639,8 +630,6 @@ def main():
                        help='Path to the transfers CSV file')
     parser.add_argument('--output_file', type=str, default='sampledata/general_velocities.pickle', 
                        help='Path to the output file')
-    parser.add_argument('--save_every_n', type=int, default=1, 
-                       help='Save every Nth position of the velocity array')
     parser.add_argument('--n_cores', type=int, default=1, 
                        help='Number of cores to use')
     parser.add_argument('--n_chunks', type=int, default=1, 
@@ -669,7 +658,6 @@ def main():
         allocated_file=args.allocated_file,
         transfers_file=args.transfers_file,
         output_file=args.output_file,
-        save_every_n=args.save_every_n,
         n_cores=args.n_cores,
         n_chunks=args.n_chunks,
         split_save=args.split_save,
